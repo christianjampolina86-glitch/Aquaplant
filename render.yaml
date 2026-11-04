@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: aquaplant-station
+    runtime: node
+    # Singapore is the closest region for the Philippines. Change if you prefer.
+    region: singapore
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/system/status
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render injects PORT automatically. Do NOT hardcode it here.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: DEVICE_KEY
+        value: aquaplant_esp32_device_key_secret_2026
+      - key: ALLOW_REGISTRATION
+        value: "true"
+      # Semaphore SMS Integration (P500 Budget - P0.50/SMS):
+      - key: SEMAPHORE_API_KEY
+        sync: false
+      - key: SEMAPHORE_SENDER_NAME
+        value: SEMAPHORE
+      # External MySQL connection string: mysql://user:pass@host:3306/dbname
+      # Render has no managed MySQL, so this must point at freesqldatabase,
+      # Aiven, Railway, etc. Leave it unset and the app runs on in-memory
+      # storage, which is wiped on every restart.
+      - key: DATABASE_URL
+        sync: false

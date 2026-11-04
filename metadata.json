@@ -1,0 +1,6 @@
+{
+  "name": "AQUAPLANT - Hydroponic Monitoring & Control",
+  "description": "ESP32-based automated hydroponic reservoir flushing and nutrient re-balancing system using TDS/pH feedback with real-time telemetry, relay controls, and hardware diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
