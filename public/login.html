@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AQUAPLANT | Web Monitoring & Control System</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌱</text></svg>">
+</head>
+<body style="min-height: 100vh; display: flex; flex-direction: column;">
+  <!-- Desktop Web App Top Navigation -->
+  <header style="background: #081528; border-bottom: 1px solid #163252; padding: 14px 32px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 4px 20px rgba(0,0,0,0.5);">
+    <div style="display: flex; align-items: center; gap: 14px;">
+      <div style="width: 42px; height: 42px; border-radius: 10px; background: linear-gradient(135deg, #00f2fe, #4facfe); display: flex; align-items: center; justify-content: center; font-size: 22px; box-shadow: 0 0 16px rgba(0,242,254,0.3);">🌱</div>
+      <div>
+        <h1 style="font-size: 19px; font-weight: 800; letter-spacing: 1px; background: linear-gradient(90deg, #ffffff, #00f2fe); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0;">AQUAPLANT WEB CONTROL CENTER</h1>
+        <span style="font-size: 11px; color: #8ca2ba;">Capstone Project: ESP32 Automated Hydroponic Reservoir Flushing & Nutrient Feedback System</span>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 12px;">
+      <div style="display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; background: #030a16; border: 1px solid #163252; border-radius: 999px; font-size: 12px; color: #00f2fe;">
+        <span style="width: 8px; height: 8px; background: #00e676; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px #00e676;"></span>
+        <span>Cloud Web Server Online</span>
+      </div>
+      <a href="/api/download/firmware" class="btn btn-outline btn-sm">💾 ESP32 Firmware (.ino)</a>
+      <a href="/api/download/schema" class="btn btn-outline btn-sm">🗄️ MySQL Schema (.sql)</a>
+    </div>
+  </header>
+
+  <!-- Main Desktop Web Portal Content: Simple Centered Login Card -->
+  <main style="flex: 1; max-width: 480px; margin: 30px auto; width: 100%; padding: 0 16px; display: flex; flex-direction: column; justify-content: center;">
+    <div class="auth-card" style="width: 100%; padding: 32px;">
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px;">
+          <div>
+            <h3 style="font-size: 18px; font-weight: 800; color: #ffffff;">Operator Web Console</h3>
+            <p style="font-size: 12px; color: #8ca2ba;">Authenticate to access remote relay toggles & telemetry stream</p>
+          </div>
+          <span style="font-size: 24px;">🔐</span>
+        </div>
+
+        <div class="auth-tabs" style="margin-bottom: 20px;">
+          <button type="button" class="auth-tab-btn active" id="tabLoginBtn" onclick="switchAuthTab('login')">Sign In</button>
+          <button type="button" class="auth-tab-btn" id="tabOfflineBtn" onclick="switchAuthTab('offline')">⚡ Offline Station</button>
+          <button type="button" class="auth-tab-btn" id="tabRegisterBtn" onclick="switchAuthTab('register')">Register Operator</button>
+        </div>
+
+        <div id="authAlert" class="auth-alert"></div>
+
+        <!-- Login Form -->
+        <form id="loginForm" onsubmit="handleLoginSubmit(event)">
+          <div class="form-group">
+            <label for="loginUsername">Operator Username or Email</label>
+            <input type="text" id="loginUsername" class="form-input" placeholder="e.g. admin or operator" required autocomplete="username" value="admin">
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">Security Password</label>
+            <input type="password" id="loginPassword" class="form-input" placeholder="••••••••" required autocomplete="current-password" value="admin123">
+          </div>
+          <button type="submit" class="btn btn-cyan" style="width: 100%; padding: 12px; margin-top: 6px; font-size: 14px;" id="loginSubmitBtn">
+            Access Telemetry Dashboard
+          </button>
+
+          <div style="margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border-color); display: flex; gap: 8px;">
+            <button type="button" onclick="fillAdminCredentials()" class="btn btn-outline btn-sm" style="flex: 1; font-size: 11px;">
+              🔑 Default Admin (admin / admin123)
+            </button>
+            <button type="button" onclick="instantDemoLogin()" class="btn btn-cyan btn-sm" style="flex: 1; font-size: 11px;">
+              🚀 Quick 1-Click Entry
+            </button>
+          </div>
+
+          <!-- Standalone Offline Mode Quick Option Banner -->
+          <div style="margin-top: 16px; background: rgba(255, 165, 2, 0.08); border: 1px solid rgba(255, 165, 2, 0.35); border-radius: 8px; padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+            <div>
+              <div style="font-size: 12px; font-weight: 700; color: #ffa502;">⚡ Off-Grid / Standalone Field Station?</div>
+              <div style="font-size: 11px; color: #8ca2ba;">No cloud or internet needed. Direct pump control & USB serial.</div>
+            </div>
+            <button type="button" onclick="instantOfflineLogin()" class="btn btn-sm" style="background: #ffa502; color: #030a16; font-weight: 800; border: none; white-space: nowrap; padding: 7px 12px; font-size: 11px; cursor: pointer;">
+              ⚡ Launch Offline
+            </button>
+          </div>
+        </form>
+
+        <!-- Offline Station Form -->
+        <form id="offlineForm" style="display: none;" onsubmit="handleOfflineSubmit(event)">
+          <div style="background: rgba(255, 165, 2, 0.1); border: 1px solid rgba(255, 165, 2, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 16px; font-size: 12px; color: #ffa502; line-height: 1.5;">
+            <strong>Standalone Field Gateway:</strong> Authenticate locally without reaching the cloud database. Retains write authorization for pumps, flushes, and USB Serial.
+          </div>
+          <div class="form-group">
+            <label for="offlineOpName">Field Operator Name / Call-sign</label>
+            <input type="text" id="offlineOpName" class="form-input" placeholder="Field Operator 1" value="Field Operator" required>
+          </div>
+          <div class="form-group">
+            <label for="offlineStation">Greenhouse / Field Station ID</label>
+            <input type="text" id="offlineStation" class="form-input" placeholder="Greenhouse Alpha (Station #1)" value="Greenhouse Alpha (Station #1)" required>
+          </div>
+          <div style="margin-bottom: 16px; font-size: 11px; color: #8ca2ba; line-height: 1.6;">
+            <div>✓ Zero cloud server connection required</div>
+            <div>✓ Direct manual pump toggles (Circulation, Refill, Flush)</div>
+            <div>✓ USB Web Serial hardware connectivity supported</div>
+          </div>
+          <button type="submit" class="btn btn-cyan" style="width: 100%; padding: 12px; margin-top: 6px; font-size: 14px; background: linear-gradient(135deg, #ffa502, #f39c12); color: #000; font-weight: 800; border: none; cursor: pointer;">
+            ⚡ Enter Dashboard in Offline Field Mode
+          </button>
+        </form>
+
+        <!-- Registration Form -->
+        <form id="registerForm" style="display: none;" onsubmit="handleRegisterSubmit(event)">
+          <div class="form-group">
+            <label for="regUsername">Desired Operator Username</label>
+            <input type="text" id="regUsername" class="form-input" placeholder="e.g. researcher1" required autocomplete="username">
+          </div>
+          <div class="form-group">
+            <label for="regEmail">Academic / Institution Email</label>
+            <input type="email" id="regEmail" class="form-input" placeholder="operator@university.edu" required autocomplete="email">
+          </div>
+          <div class="form-group">
+            <label for="regPassword">Password (min 6 characters)</label>
+            <input type="password" id="regPassword" class="form-input" placeholder="••••••••" minlength="6" required autocomplete="new-password">
+          </div>
+          <button type="submit" class="btn btn-cyan" style="width: 100%; padding: 12px; margin-top: 6px; font-size: 14px;" id="regSubmitBtn">
+            Create Authorized Account
+          </button>
+        </form>
+
+        <div style="margin-top: 20px; text-align: center; font-size: 11px; color: var(--text-dim);">
+          Protected by JWT 12-Hour Token & Salted Bcrypt Hashing | Web App Architecture
+        </div>
+      </div>
+  </main>
+
+  <footer style="background: #020710; border-top: 1px solid #163252; padding: 16px 32px; font-size: 12px; color: #55708e; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+    <div>🌱 <strong>AQUAPLANT</strong>: Capstone Engineering Project | Web-Based Monitoring and Control System</div>
+    <div>Hardware Target: ESP32 DevKit V1 | Backend: Node.js Express + MySQL2</div>
+  </footer>
+
+  <script type="module">
+    import { Api } from '/js/api.js';
+
+    // If already authenticated, redirect straight to web dashboard
+    if (Api.isAuthenticated()) {
+      window.location.replace('/dashboard.html');
+    }
+
+    window.switchAuthTab = function(tab) {
+      const loginForm = document.getElementById('loginForm');
+      const registerForm = document.getElementById('registerForm');
+      const offlineForm = document.getElementById('offlineForm');
+      const tabLoginBtn = document.getElementById('tabLoginBtn');
+      const tabOfflineBtn = document.getElementById('tabOfflineBtn');
+      const tabRegisterBtn = document.getElementById('tabRegisterBtn');
+      const alertBox = document.getElementById('authAlert');
+      alertBox.className = 'auth-alert';
+      alertBox.textContent = '';
+
+      // Reset tabs
+      tabLoginBtn.classList.remove('active');
+      if (tabOfflineBtn) tabOfflineBtn.classList.remove('active');
+      tabRegisterBtn.classList.remove('active');
+      loginForm.style.display = 'none';
+      if (offlineForm) offlineForm.style.display = 'none';
+      registerForm.style.display = 'none';
+
+      if (tab === 'login') {
+        loginForm.style.display = 'block';
+        tabLoginBtn.classList.add('active');
+      } else if (tab === 'offline') {
+        if (offlineForm) offlineForm.style.display = 'block';
+        if (tabOfflineBtn) tabOfflineBtn.classList.add('active');
+      } else {
+        registerForm.style.display = 'block';
+        tabRegisterBtn.classList.add('active');
+      }
+    };
+
+    window.instantOfflineLogin = function(op = 'Field Operator', station = 'Greenhouse Alpha (Station #1)') {
+      showAlert('⚡ Offline Field Mode armed. Initializing standalone session...', 'success');
+      Api.setOfflineMode(true, op, station);
+      setTimeout(() => {
+        window.location.href = '/dashboard.html';
+      }, 350);
+    };
+
+    window.handleOfflineSubmit = function(e) {
+      e.preventDefault();
+      const op = document.getElementById('offlineOpName').value.trim() || 'Field Operator';
+      const station = document.getElementById('offlineStation').value.trim() || 'Greenhouse Alpha (Station #1)';
+      instantOfflineLogin(op, station);
+    };
+
+    window.fillAdminCredentials = function() {
+      document.getElementById('loginUsername').value = 'admin';
+      document.getElementById('loginPassword').value = 'admin123';
+      showAlert('Demo admin credentials populated. Click "Access Telemetry Dashboard".', 'success');
+    };
+
+    window.instantDemoLogin = async function() {
+      showAlert('Authenticating demo session...', 'success');
+      try {
+        await Api.login('admin', 'admin123');
+        window.location.href = '/dashboard.html';
+      } catch (err) {
+        // If login failed, try registration or direct proceed
+        try {
+          await Api.register('admin', 'admin@aquaplant.local', 'admin123');
+          window.location.href = '/dashboard.html';
+        } catch (regErr) {
+          window.location.href = '/dashboard.html';
+        }
+      }
+    };
+
+    function showAlert(msg, type = 'error') {
+      const alertBox = document.getElementById('authAlert');
+      alertBox.className = `auth-alert ${type}`;
+      alertBox.textContent = msg;
+    }
+
+    window.handleLoginSubmit = async function(e) {
+      e.preventDefault();
+      const username = document.getElementById('loginUsername').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const btn = document.getElementById('loginSubmitBtn');
+
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Authenticating...';
+        await Api.login(username, password);
+        showAlert('Authentication verified. Redirecting to dashboard...', 'success');
+        setTimeout(() => {
+          window.location.href = '/dashboard.html';
+        }, 400);
+      } catch (err) {
+        showAlert(err.message || 'Login failed. Verify credentials.', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Access Telemetry Dashboard';
+      }
+    };
+
+    window.handleRegisterSubmit = async function(e) {
+      e.preventDefault();
+      const username = document.getElementById('regUsername').value.trim();
+      const email = document.getElementById('regEmail').value.trim();
+      const password = document.getElementById('regPassword').value;
+      const btn = document.getElementById('regSubmitBtn');
+
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Registering operator...';
+        await Api.register(username, email, password);
+        showAlert('Registration complete! Launching dashboard...', 'success');
+        setTimeout(() => {
+          window.location.href = '/dashboard.html';
+        }, 400);
+      } catch (err) {
+        showAlert(err.message || 'Registration rejected.', 'error');
+        btn.disabled = false;
+        btn.textContent = 'Create Authorized Account';
+      }
+    };
+  </script>
+</body>
+</html>

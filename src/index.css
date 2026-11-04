@@ -1,0 +1,21 @@
+/**
+ * AQUAPLANT Web Application - Global Stylesheet
+ * Supports seamless Dark Mode and Light Mode
+ */
+@import "tailwindcss";
+
+:root {
+  color-scheme: light dark;
+}
+
+html.dark {
+  color-scheme: dark;
+}
+
+html:not(.dark) {
+  color-scheme: light;
+}
+
+body {
+  transition: background-color 0.2s ease, color 0.2s ease;
+}

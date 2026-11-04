@@ -1,0 +1,1163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AQUAPLANT | Telemetry & Control Dashboard</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌱</text></svg>">
+</head>
+<body>
+  <div class="app-wrapper">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="brand-section">
+        <div class="brand-icon">🌱</div>
+        <div class="brand-title">
+          <h1>AQUAPLANT</h1>
+          <span class="tagline">ESP32 Automated Hydroponic Reservoir & Nutrient System</span>
+        </div>
+      </div>
+
+      <div class="header-status-group">
+        <!-- Live ESP32 Online/Offline Status Indicator -->
+        <div id="deviceStatusBadge" class="device-status-badge offline" title="Evaluated based on reading received within the last 3 minutes">
+          <span class="status-dot"></span>
+          <span id="deviceStatusText">ESP32 Connecting...</span>
+        </div>
+
+        <div class="system-clock" id="systemClock">--:--:-- UTC</div>
+
+        <div class="user-badge">
+          <span>👤</span>
+          <strong id="currentUsername">Operator</strong>
+          <span style="font-size: 10px; background: #132d4b; padding: 2px 6px; border-radius: 4px; color: var(--cyan-primary);" id="currentUserRole">ADMIN</span>
+        </div>
+
+        <div class="header-actions">
+          <button type="button" class="btn btn-outline btn-sm" id="btnThemeToggle" onclick="toggleTheme()" title="Toggle Light / Dark mode">
+            ☀️ Light Mode
+          </button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="openModal('simulatorModal')" title="Simulate reservoir telemetry and alert triggers">
+            ⚡ Simulator
+          </button>
+          <button type="button" class="btn btn-outline btn-sm" onclick="openModal('firmwareModal')">
+            💻 Firmware (.ino)
+          </button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="handleLogout()">
+            Log Out
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <!-- Top Status Cards: System Status, Mode (AUTO), Reservoir Level Bar -->
+    <section class="grid-top-status">
+      <!-- 1. System Health Status -->
+      <div class="card">
+        <div class="card-title-sm">
+          <span>Overall System Status</span>
+          <span id="feedbackLoopStatus" style="color: var(--cyan-primary); font-size: 11px;">FEEDBACK ACTIVE</span>
+        </div>
+        <div class="status-indicator-box">
+          <div id="systemHealthIcon" class="status-symbol normal">✓</div>
+          <div>
+            <div id="systemHealthText" class="status-text-val">NORMAL</div>
+            <div id="systemHealthSub" class="status-sub">All nutrient parameters within target setpoints</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2. Operational Mode Card -->
+      <div class="card">
+        <div class="card-title-sm">
+          <span>Operational Mode</span>
+          <span style="font-size: 11px; color: var(--text-muted)">CLOSED-LOOP CONTROL</span>
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px;">
+          <div>
+            <div id="modeStatusText" class="status-text-val" style="color: var(--cyan-primary);">AUTO</div>
+            <div class="status-sub">Auto-flush triggers when TDS or pH exceed targets</div>
+          </div>
+          <label class="switch" title="Toggle Auto / Manual Mode">
+            <input type="checkbox" id="autoModeToggle" checked onchange="handleControlToggle('auto_mode', this.checked)">
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 3. Reservoir Water Level Bar -->
+      <div class="card">
+        <div class="card-title-sm">
+          <span>Reservoir Water Capacity</span>
+          <span style="font-size: 11px; color: var(--text-muted)">TARGET 70-100%</span>
+        </div>
+        <div class="level-meter-wrapper">
+          <div class="level-meter-header">
+            <span style="color: var(--text-muted);">Current Depth</span>
+            <span class="level-meter-pct" id="topLevelPct">85.0%</span>
+          </div>
+          <div class="level-track">
+            <div class="level-fill" id="topLevelFill" style="width: 85%;"></div>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-top: 6px;">
+            <span>0% (Empty)</span>
+            <span>Target Level (≥70%)</span>
+            <span>100% (Full)</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 Sensor Cards with Target Ranges -->
+    <section class="sensors-grid">
+      <!-- TDS Sensor Card -->
+      <div class="sensor-card" id="cardTds">
+        <div class="sensor-header">
+          <div class="sensor-title">
+            <span>⚡ Total Dissolved Solids</span>
+          </div>
+          <span class="sensor-badge badge-optimal" id="badgeTds">Optimal</span>
+        </div>
+        <div class="sensor-value-group">
+          <div class="sensor-val" id="valTds">745.0</div>
+          <div class="sensor-unit">ppm</div>
+        </div>
+        <div class="sensor-target-note">
+          <span>Target Range:</span>
+          <span class="range-highlight">600 - 900 ppm</span>
+        </div>
+      </div>
+
+      <!-- pH Sensor Card -->
+      <div class="sensor-card" id="cardPh">
+        <div class="sensor-header">
+          <div class="sensor-title">
+            <span>🧪 Nutrient Acidity / pH</span>
+          </div>
+          <span class="sensor-badge badge-optimal" id="badgePh">Optimal</span>
+        </div>
+        <div class="sensor-value-group">
+          <div class="sensor-val" id="valPh">6.08</div>
+          <div class="sensor-unit">pH</div>
+        </div>
+        <div class="sensor-target-note">
+          <span>Target Range:</span>
+          <span class="range-highlight">5.50 - 6.50 pH</span>
+        </div>
+      </div>
+
+      <!-- Temperature Card -->
+      <div class="sensor-card" id="cardTemp">
+        <div class="sensor-header">
+          <div class="sensor-title">
+            <span>🌡️ Water Temperature</span>
+          </div>
+          <span class="sensor-badge badge-optimal" id="badgeTemp">Optimal</span>
+        </div>
+        <div class="sensor-value-group">
+          <div class="sensor-val" id="valTemp">24.2</div>
+          <div class="sensor-unit">°C</div>
+        </div>
+        <div class="sensor-target-note">
+          <span>Target Range:</span>
+          <span class="range-highlight">20.0 - 28.0 °C</span>
+        </div>
+      </div>
+
+      <!-- Water Level Card -->
+      <div class="sensor-card" id="cardLevel">
+        <div class="sensor-header">
+          <div class="sensor-title">
+            <span>🌊 Reservoir Liquid Level</span>
+          </div>
+          <span class="sensor-badge badge-optimal" id="badgeLevel">Optimal</span>
+        </div>
+        <div class="sensor-value-group">
+          <div class="sensor-val" id="valLevel">85.0</div>
+          <div class="sensor-unit">%</div>
+        </div>
+        <div class="sensor-target-note">
+          <span>Target Range:</span>
+          <span class="range-highlight">70 - 100 %</span>
+        </div>
+      </div>
+
+      <!-- Canopy Humidity Card -->
+      <div class="sensor-card" id="cardHumidity">
+        <div class="sensor-header">
+          <div class="sensor-title">
+            <span>💨 Ambient Canopy Humidity</span>
+          </div>
+          <span class="sensor-badge badge-optimal" id="badgeHumidity">Optimal</span>
+        </div>
+        <div class="sensor-value-group">
+          <div class="sensor-val" id="valHumidity">64.5</div>
+          <div class="sensor-unit">% RH</div>
+        </div>
+        <div class="sensor-target-note">
+          <span>Target Range:</span>
+          <span class="range-highlight">50.0 - 70.0 %</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Real-Time HTML5 Canvas Chart Section (No External Chart Libraries) -->
+    <section class="chart-section-card">
+      <div class="chart-toolbar">
+        <div class="chart-title-group">
+          <h2>📊 Multi-Sensor Telemetry Time-Series</h2>
+          <p>Continuous dynamic feedback tracking TDS (ppm), pH, Water Temp (°C), and Humidity (% RH)</p>
+        </div>
+        <div class="chart-controls-group">
+          <div class="btn-time-group">
+            <button type="button" class="btn-time" id="btnRange1h" onclick="setTimeRange('1h')">1H</button>
+            <button type="button" class="btn-time" id="btnRange6h" onclick="setTimeRange('6h')">6H</button>
+            <button type="button" class="btn-time" id="btnRange12h" onclick="setTimeRange('12h')">12H</button>
+            <button type="button" class="btn-time active" id="btnRange24h" onclick="setTimeRange('24h')">24H</button>
+          </div>
+          <button type="button" class="btn btn-outline btn-sm" onclick="fetchTelemetryHistory()" title="Refresh chart series">
+            🔄 Refresh
+          </button>
+        </div>
+      </div>
+
+      <!-- Canvas Rendering Wrapper -->
+      <div class="canvas-container">
+        <canvas id="telemetryChart"></canvas>
+      </div>
+
+      <!-- Chart Legend with Target Shaded Indicators -->
+      <div class="chart-legend">
+        <div class="legend-item">
+          <span class="legend-color" style="background: #00f2fe; box-shadow: 0 0 6px #00f2fe;"></span>
+          <span>TDS (ppm) [Target 600-900]</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #e056fd; box-shadow: 0 0 6px #e056fd;"></span>
+          <span>pH [Target 5.5-6.5]</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #f0932b; box-shadow: 0 0 6px #f0932b;"></span>
+          <span>Temperature (°C) [Target 20-28]</span>
+        </div>
+        <div class="legend-item">
+          <span class="legend-color" style="background: #00e676; box-shadow: 0 0 6px #00e676;"></span>
+          <span>Humidity (% RH) [Target 50-70]</span>
+        </div>
+        <div class="legend-item" style="opacity: 0.7;">
+          <span class="legend-color" style="background: rgba(0, 242, 254, 0.15); border: 1px dashed rgba(0,242,254,0.4);"></span>
+          <span>Optimal Target Shading</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- System Controls & Actuators Section -->
+    <section class="controls-section">
+      <!-- Hardware Relays -->
+      <!-- Hardware 3 Submersible Pumps -->
+      <div class="card">
+        <div class="card-title-sm">
+          <span>⚡ ESP32 3 Submersible Pumps Array (Polled Every 3s)</span>
+          <span style="font-size: 11px; color: var(--cyan-primary);">HARDWARE SYNCHRONIZED</span>
+        </div>
+
+        <div class="relays-grid">
+          <!-- Submersible Pump 1: Fresh Water Pump -->
+          <div class="relay-item-card" id="relayCardWater">
+            <div class="relay-meta">
+              <div>
+                <div class="relay-title">💧 Fresh Water Pump</div>
+                <div class="relay-desc">GPIO 25 (Submersible #1 • Pumping Water)</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="relayToggleWater" onchange="handleControlToggle('water_pump', this.checked)">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 8px;">
+              <span>Hardware State:</span>
+              <strong id="relayStatusWater" style="color: var(--success);">ACTIVE (PUMPING)</strong>
+            </div>
+          </div>
+
+          <!-- Submersible Pump 2: Solutioned Water Pump -->
+          <div class="relay-item-card" id="relayCardSolution">
+            <div class="relay-meta">
+              <div>
+                <div class="relay-title">⚡ Solutioned Water Pump</div>
+                <div class="relay-desc">GPIO 26 (Submersible #2 • Pumping Solution)</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="relayToggleSolution" onchange="handleControlToggle('solution_pump', this.checked)">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 8px;">
+              <span>Hardware State:</span>
+              <strong id="relayStatusSolution" style="color: var(--text-muted);">STANDBY (IDLE)</strong>
+            </div>
+          </div>
+
+          <!-- Submersible Pump 3: Flushing Pump -->
+          <div class="relay-item-card" id="relayCardFlush">
+            <div class="relay-meta">
+              <div>
+                <div class="relay-title">🔄 Flushing Pump</div>
+                <div class="relay-desc">GPIO 27 (Submersible #3 • Reservoir Drain)</div>
+              </div>
+              <label class="switch">
+                <input type="checkbox" id="relayToggleFlush" onchange="handleControlToggle('flush_pump', this.checked)">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div style="display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); margin-top: 8px;">
+              <span>Hardware State:</span>
+              <strong id="relayStatusFlush" style="color: var(--text-muted);">STANDBY (IDLE)</strong>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Manual Flush Cycle Trigger Card -->
+      <div class="manual-flush-card">
+        <div>
+          <h3>🚨 Emergency 3-Pump Flush Sequence</h3>
+          <p>
+            Executes automated 3-pump reservoir re-balance: activates the <strong>Flushing Submersible Pump</strong> to evacuate spent solution, then coordinates the <strong>Fresh Water Pump</strong> and <strong>Solutioned Water Pump</strong> to reconstitute safe target TDS & pH.
+          </p>
+        </div>
+        <button type="button" class="btn btn-danger" style="width: 100%; padding: 12px; font-weight: 700;" onclick="handleManualFlush()" id="btnManualFlush">
+          Trigger 3-Pump Flush Sequence
+        </button>
+      </div>
+    </section>
+
+    <!-- Recent Logs Panel & Export to Excel -->
+    <section class="logs-section-card">
+      <div class="logs-toolbar">
+        <div>
+          <h2 style="font-size: 18px; font-weight: 800; color: #fff;">📜 System Audit & Event Logs</h2>
+          <p style="font-size: 12px; color: var(--text-muted);">Database stored-procedure synchronized transactional event history</p>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+          <select id="logLevelFilter" class="form-input" style="padding: 6px 12px; width: auto; font-size: 12px;" onchange="fetchSystemLogs()">
+            <option value="ALL">All Event Levels</option>
+            <option value="INFO">INFO Only</option>
+            <option value="WARN">WARN Only</option>
+            <option value="ALERT">ALERT Only</option>
+            <option value="SUCCESS">SUCCESS Only</option>
+          </select>
+
+          <!-- Export to Excel Button (as requested) -->
+          <button type="button" class="btn btn-cyan btn-sm" onclick="handleExportExcel()" id="btnExportExcel">
+            📥 Export to Excel (.xlsx)
+          </button>
+        </div>
+      </div>
+
+      <div class="logs-table-wrapper">
+        <table class="logs-table">
+          <thead>
+            <tr>
+              <th style="width: 170px;">Timestamp</th>
+              <th style="width: 90px;">Level</th>
+              <th style="width: 130px;">Source</th>
+              <th>Audit Log Message</th>
+            </tr>
+          </thead>
+          <tbody id="logsTableBody">
+            <tr>
+              <td colspan="4" style="text-align: center; color: var(--text-dim); padding: 24px;">Loading system logs...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <!-- MODAL: Capstone Telemetry Simulator for Defense -->
+  <div class="modal-overlay" id="simulatorModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>🧪 Capstone Telemetry & Anomaly Simulator</h3>
+        <button class="modal-close" onclick="closeModal('simulatorModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="margin-bottom: 16px; color: var(--text-muted); font-size: 13px;">
+          Use this interactive panel during your capstone defense to demonstrate how the ESP32 closed-loop feedback reacts to changing water chemistry without needing live chemicals:
+        </p>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 16px;">
+          <div class="form-group">
+            <label>TDS (ppm)</label>
+            <input type="number" id="simTds" class="form-input" value="750" min="0" max="2500" step="1">
+            <small style="color: var(--text-dim);">Target: 600 - 900</small>
+          </div>
+          <div class="form-group">
+            <label>pH Value</label>
+            <input type="number" id="simPh" class="form-input" value="6.10" min="0" max="14" step="0.05">
+            <small style="color: var(--text-dim);">Target: 5.50 - 6.50</small>
+          </div>
+          <div class="form-group">
+            <label>Temp (°C)</label>
+            <input type="number" id="simTemp" class="form-input" value="24.2" min="10" max="45" step="0.1">
+            <small style="color: var(--text-dim);">Target: 20 - 28 °C</small>
+          </div>
+          <div class="form-group">
+            <label>Level (%)</label>
+            <input type="number" id="simLevel" class="form-input" value="85" min="0" max="100" step="1">
+            <small style="color: var(--text-dim);">Target: 70 - 100%</small>
+          </div>
+          <div class="form-group">
+            <label>Humidity (% RH)</label>
+            <input type="number" id="simHumidity" class="form-input" value="65.0" min="10" max="100" step="0.5">
+            <small style="color: var(--text-dim);">Target: 50 - 70%</small>
+          </div>
+        </div>
+
+        <div style="margin-bottom: 16px;">
+          <label style="display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); margin-bottom: 8px;">
+            Quick Anomaly Presets (Simulate Biological Events):
+          </label>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" class="btn btn-outline btn-sm" onclick="setSimPreset(750, 6.05, 24.5, 88, 64.5)">
+              🌿 Normal Optimal
+            </button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="setSimPreset(1150, 6.10, 24.5, 85, 65)">
+              ⚠️ High TDS Spike (Salt Buildup)
+            </button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="setSimPreset(420, 6.05, 24.5, 85, 65)">
+              ⚠️ Low TDS (Depleted Nutrient)
+            </button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="setSimPreset(740, 4.80, 24.5, 85, 65)">
+              🧪 Acidic pH Lockout (&lt;5.5)
+            </button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="setSimPreset(740, 6.10, 24.5, 85, 34)">
+              💨 Low Humidity (&lt;50% Dry Air)
+            </button>
+            <button type="button" class="btn btn-danger btn-sm" onclick="setSimPreset(740, 6.10, 24.5, 85, 88)">
+              🌧️ High Humidity (&gt;70% Mold Risk)
+            </button>
+          </div>
+        </div>
+
+        <div style="display: flex; justify-content: flex-end; gap: 10px;">
+          <button type="button" class="btn btn-outline" onclick="closeModal('simulatorModal')">Cancel</button>
+          <button type="button" class="btn btn-cyan" onclick="submitSimulatedTelemetry()">Inject Simulated ESP32 Telemetry</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Arduino Firmware Viewer -->
+  <div class="modal-overlay" id="firmwareModal">
+    <div class="modal-box" style="max-width: 860px;">
+      <div class="modal-header">
+        <h3>💻 ESP32 Firmware Source (aquaplant_esp32.ino)</h3>
+        <button class="modal-close" onclick="closeModal('firmwareModal')">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 10px;">
+          Complete Arduino C++ firmware ready to upload via Arduino IDE. Contains Station + AP fallback mode, mDNS <code>aquaplant.local</code>, 60s telemetry, 3s rapid polling, and autonomous auto-flush logic.
+        </p>
+        <pre class="code-pre" id="firmwareCodeDisplay">Loading firmware source...</pre>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 14px;">
+          <a href="/api/download/firmware" download="aquaplant_esp32.ino" class="btn btn-cyan btn-sm">
+            💾 Download .INO File
+          </a>
+          <button type="button" class="btn btn-outline btn-sm" onclick="copyFirmwareCode()">
+            📋 Copy Code to Clipboard
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <script type="module">
+    import { Api } from '/js/api.js';
+
+    // 1. Guard route: redirect to login if no token (with instant demo auto-login)
+    await Api.requireAuth();
+
+    // Set logged-in user in UI
+    const currentUser = Api.getUser();
+    if (currentUser) {
+      document.getElementById('currentUsername').textContent = currentUser.username || 'Operator';
+      document.getElementById('currentUserRole').textContent = (currentUser.role || 'OPERATOR').toUpperCase();
+    }
+
+    // Real-Time Clock
+    function updateClock() {
+      const now = new Date();
+      document.getElementById('systemClock').textContent = now.toLocaleTimeString() + ' | ' + now.toLocaleDateString();
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // System State
+    let currentRange = '24h';
+    let historyData = [];
+    let mouseHoverPoint = null;
+
+    // Canvas Setup
+    const canvas = document.getElementById('telemetryChart');
+    const ctx = canvas.getContext('2d');
+
+    function resizeCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+      ctx.resetTransform();
+      ctx.scale(dpr, dpr);
+      renderChart();
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    // Canvas Mouse Interaction for Crosshair & Tooltip
+    canvas.parentElement.addEventListener('mousemove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      mouseHoverPoint = {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      };
+      renderChart();
+    });
+
+    canvas.parentElement.addEventListener('mouseleave', () => {
+      mouseHoverPoint = null;
+      renderChart();
+    });
+
+    // Pure HTML5 Canvas Chart Renderer (NO external library!)
+    function renderChart() {
+      const width = canvas.width / (window.devicePixelRatio || 1);
+      const height = canvas.height / (window.devicePixelRatio || 1);
+
+      ctx.clearRect(0, 0, width, height);
+
+      const isLight = document.body.classList.contains('light-mode');
+
+      // Background
+      ctx.fillStyle = isLight ? '#ffffff' : '#020710';
+      ctx.fillRect(0, 0, width, height);
+
+      if (!historyData || historyData.length < 2) {
+        ctx.fillStyle = isLight ? '#64748b' : '#55708e';
+        ctx.font = '14px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText('Collecting hydroponic telemetry data...', width / 2, height / 2);
+        return;
+      }
+
+      const padding = { top: 30, right: 60, bottom: 45, left: 60 };
+      const chartW = width - padding.left - padding.right;
+      const chartH = height - padding.top - padding.bottom;
+
+      // Min/Max Calculations
+      // Left Axis: TDS (ppm) from 300 to 1400
+      const tdsMin = 300;
+      const tdsMax = 1300;
+
+      // Right Axis: pH (4.0 to 9.0) & Temp (15 to 35 C)
+      const phMin = 4.0;
+      const phMax = 9.0;
+
+      // 1. Draw Target Optimal Shaded Zone for TDS (600 - 900 ppm)
+      const targetTdsTopY = padding.top + chartH * (1 - (900 - tdsMin) / (tdsMax - tdsMin));
+      const targetTdsBottomY = padding.top + chartH * (1 - (600 - tdsMin) / (tdsMax - tdsMin));
+      const targetTdsHeight = targetTdsBottomY - targetTdsTopY;
+
+      ctx.fillStyle = isLight ? 'rgba(2, 132, 199, 0.08)' : 'rgba(0, 242, 254, 0.05)';
+      ctx.fillRect(padding.left, targetTdsTopY, chartW, targetTdsHeight);
+
+      // Horizontal Grid Lines
+      ctx.strokeStyle = isLight ? '#e2e8f0' : '#0d1e33';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+
+      const gridSteps = 5;
+      for (let i = 0; i <= gridSteps; i++) {
+        const y = padding.top + (chartH / gridSteps) * i;
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(padding.left + chartW, y);
+        ctx.stroke();
+
+        // Left Labels (TDS)
+        const tdsVal = Math.round(tdsMax - (i / gridSteps) * (tdsMax - tdsMin));
+        ctx.fillStyle = isLight ? '#475569' : '#55708e';
+        ctx.font = '11px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText(tdsVal + ' ppm', padding.left - 8, y + 4);
+
+        // Right Labels (pH)
+        const phVal = (phMax - (i / gridSteps) * (phMax - phMin)).toFixed(1);
+        ctx.fillStyle = isLight ? '#b45309' : '#b8860b';
+        ctx.textAlign = 'left';
+        ctx.fillText(phVal + ' pH', padding.left + chartW + 8, y + 4);
+      }
+
+      // X-Axis Time Labels
+      const count = historyData.length;
+      const timeSteps = Math.min(6, count);
+      for (let i = 0; i < timeSteps; i++) {
+        const dataIdx = Math.floor((i / (timeSteps - 1 || 1)) * (count - 1));
+        const item = historyData[dataIdx];
+        if (!item) continue;
+        const x = padding.left + (dataIdx / (count - 1)) * chartW;
+        const dateObj = new Date(item.recorded_at);
+        const timeStr = dateObj.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        ctx.fillStyle = '#55708e';
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(timeStr, x, padding.top + chartH + 20);
+      }
+
+      // Helper coordinate mappings
+      const getX = (idx) => padding.left + (idx / (count - 1)) * chartW;
+      const getY_TDS = (val) => padding.top + chartH * (1 - Math.max(0, Math.min(1, (val - tdsMin) / (tdsMax - tdsMin))));
+      const getY_PH = (val) => padding.top + chartH * (1 - Math.max(0, Math.min(1, (val - phMin) / (phMax - phMin))));
+      const getY_TEMP = (val) => {
+        // Temp mapped to 15C - 35C
+        return padding.top + chartH * (1 - Math.max(0, Math.min(1, (val - 15) / 20)));
+      };
+      const getY_HUMIDITY = (val) => {
+        // Humidity mapped to 20% - 100% RH
+        return padding.top + chartH * (1 - Math.max(0, Math.min(1, (val - 20) / 80)));
+      };
+
+      // 2. Draw TDS Curve (Cyan Glow)
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = '#00f2fe';
+      ctx.shadowColor = 'rgba(0, 242, 254, 0.5)';
+      ctx.shadowBlur = 8;
+      ctx.beginPath();
+      historyData.forEach((d, idx) => {
+        const x = getX(idx);
+        const y = getY_TDS(d.tds);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 3. Draw pH Curve (Magenta/Purple)
+      ctx.strokeStyle = '#e056fd';
+      ctx.shadowColor = 'rgba(224, 86, 253, 0.4)';
+      ctx.shadowBlur = 6;
+      ctx.beginPath();
+      historyData.forEach((d, idx) => {
+        const x = getX(idx);
+        const y = getY_PH(d.ph);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 4. Draw Temperature Curve (Amber/Orange)
+      ctx.strokeStyle = '#f0932b';
+      ctx.shadowColor = 'rgba(240, 147, 43, 0.4)';
+      ctx.beginPath();
+      historyData.forEach((d, idx) => {
+        const x = getX(idx);
+        const y = getY_TEMP(d.temperature);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // 5. Draw Humidity Curve (Emerald Green)
+      ctx.strokeStyle = '#00e676';
+      ctx.shadowColor = 'rgba(0, 230, 118, 0.4)';
+      ctx.beginPath();
+      historyData.forEach((d, idx) => {
+        const x = getX(idx);
+        const y = getY_HUMIDITY(d.humidity || 65);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Reset shadows
+      ctx.shadowBlur = 0;
+
+      // 6. Interactive Mouse Hover Crosshair and Value Readout
+      if (mouseHoverPoint && mouseHoverPoint.x >= padding.left && mouseHoverPoint.x <= padding.left + chartW) {
+        const ratio = (mouseHoverPoint.x - padding.left) / chartW;
+        const nearestIdx = Math.round(ratio * (count - 1));
+        const nearestData = historyData[nearestIdx];
+
+        if (nearestData) {
+          const hoveredX = getX(nearestIdx);
+
+          // Draw vertical crosshair line
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          ctx.moveTo(hoveredX, padding.top);
+          ctx.lineTo(hoveredX, padding.top + chartH);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Data points highlight
+          const points = [
+            { y: getY_TDS(nearestData.tds), color: '#00f2fe' },
+            { y: getY_PH(nearestData.ph), color: '#e056fd' },
+            { y: getY_TEMP(nearestData.temperature), color: '#f0932b' },
+            { y: getY_HUMIDITY(nearestData.humidity || 65), color: '#00e676' }
+          ];
+
+          points.forEach(p => {
+            ctx.fillStyle = p.color;
+            ctx.beginPath();
+            ctx.arc(hoveredX, p.y, 5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+          });
+
+          // Draw Tooltip Box
+          const tooltipW = 190;
+          const tooltipH = 108;
+          let tipX = hoveredX + 12;
+          if (tipX + tooltipW > width - padding.right) tipX = hoveredX - tooltipW - 12;
+          let tipY = padding.top + 10;
+
+          ctx.fillStyle = 'rgba(6, 17, 34, 0.95)';
+          ctx.strokeStyle = '#00f2fe';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(tipX, tipY, tooltipW, tooltipH, 6);
+          ctx.fill();
+          ctx.stroke();
+
+          const tipTime = new Date(nearestData.recorded_at).toLocaleTimeString();
+          ctx.fillStyle = '#8ca2ba';
+          ctx.font = '11px sans-serif';
+          ctx.textAlign = 'left';
+          ctx.fillText(`🕒 ${tipTime}`, tipX + 10, tipY + 18);
+
+          ctx.fillStyle = '#00f2fe';
+          ctx.font = 'bold 12px monospace';
+          ctx.fillText(`TDS:   ${nearestData.tds.toFixed(1)} ppm`, tipX + 10, tipY + 38);
+
+          ctx.fillStyle = '#e056fd';
+          ctx.fillText(`pH:    ${nearestData.ph.toFixed(2)}`, tipX + 10, tipY + 56);
+
+          ctx.fillStyle = '#f0932b';
+          ctx.fillText(`Temp:  ${nearestData.temperature.toFixed(1)} °C`, tipX + 10, tipY + 74);
+
+          ctx.fillStyle = '#00e676';
+          ctx.fillText(`Humid: ${(nearestData.humidity || 65).toFixed(1)} % RH`, tx + 10, tipY + 92);
+        }
+      }
+    }
+
+    // Time Range Selector
+    window.setTimeRange = function(range) {
+      currentRange = range;
+      ['1h', '6h', '12h', '24h'].forEach(r => {
+        const btn = document.getElementById(`btnRange${r}`);
+        if (btn) {
+          if (r === range) btn.classList.add('active');
+          else btn.classList.remove('active');
+        }
+      });
+      fetchTelemetryHistory();
+    };
+
+    // Telemetry History Fetcher
+    window.fetchTelemetryHistory = async function() {
+      try {
+        const res = await Api.getSensorHistory(currentRange);
+        if (res && res.readings) {
+          historyData = res.readings;
+          renderChart();
+        }
+      } catch (err) {
+        console.error('History fetch error:', err);
+      }
+    };
+
+    // Fetch Latest Sensors & ESP32 Online/Offline Status
+    async function fetchLatestTelemetry() {
+      try {
+        const res = await Api.getLatestSensors();
+        if (!res) return;
+
+        // ESP32 Online Status Evaluation:
+        // "Show 'ESP32 Online' only if a reading arrived in the last 3 minutes, otherwise 'Offline, last seen X ago'"
+        const statusBadge = document.getElementById('deviceStatusBadge');
+        const statusText = document.getElementById('deviceStatusText');
+
+        if (res.esp32_status && res.esp32_status.is_online) {
+          statusBadge.className = 'device-status-badge online';
+          statusText.textContent = 'ESP32 Online (Syncing)';
+        } else {
+          statusBadge.className = 'device-status-badge offline';
+          statusText.textContent = `ESP32 ${res.esp32_status ? res.esp32_status.last_seen_ago : 'Offline'}`;
+        }
+
+        const r = res.reading;
+        if (!r) return;
+
+        // Update Sensor Cards
+        document.getElementById('valTds').textContent = r.tds.toFixed(1);
+        document.getElementById('valPh').textContent = r.ph.toFixed(2);
+        document.getElementById('valTemp').textContent = r.temperature.toFixed(1);
+        document.getElementById('valLevel').textContent = r.water_level.toFixed(1);
+        document.getElementById('topLevelPct').textContent = `${r.water_level.toFixed(1)}%`;
+        document.getElementById('topLevelFill').style.width = `${Math.min(100, Math.max(0, r.water_level))}%`;
+
+        // TDS Badge & Range Check (600-900)
+        const badgeTds = document.getElementById('badgeTds');
+        const cardTds = document.getElementById('cardTds');
+        if (r.tds < 600) {
+          badgeTds.className = 'sensor-badge badge-alert';
+          badgeTds.textContent = 'Low Nutrient';
+          cardTds.classList.add('alert');
+        } else if (r.tds > 900) {
+          badgeTds.className = 'sensor-badge badge-alert';
+          badgeTds.textContent = 'Salt Buildup';
+          cardTds.classList.add('alert');
+        } else {
+          badgeTds.className = 'sensor-badge badge-optimal';
+          badgeTds.textContent = 'Optimal';
+          cardTds.classList.remove('alert');
+        }
+
+        // pH Badge & Range Check (5.5 - 6.5)
+        const badgePh = document.getElementById('badgePh');
+        const cardPh = document.getElementById('cardPh');
+        if (r.ph < 5.5) {
+          badgePh.className = 'sensor-badge badge-alert';
+          badgePh.textContent = 'Acidic';
+          cardPh.classList.add('alert');
+        } else if (r.ph > 6.5) {
+          badgePh.className = 'sensor-badge badge-alert';
+          badgePh.textContent = 'Alkaline';
+          cardPh.classList.add('alert');
+        } else {
+          badgePh.className = 'sensor-badge badge-optimal';
+          badgePh.textContent = 'Optimal';
+          cardPh.classList.remove('alert');
+        }
+
+        // Temperature (20 - 28 C)
+        const badgeTemp = document.getElementById('badgeTemp');
+        if (r.temperature < 20 || r.temperature > 28) {
+          badgeTemp.className = 'sensor-badge badge-warn';
+          badgeTemp.textContent = r.temperature < 20 ? 'Cool' : 'Warm';
+        } else {
+          badgeTemp.className = 'sensor-badge badge-optimal';
+          badgeTemp.textContent = 'Optimal';
+        }
+
+        // Water Level (70 - 100%)
+        const badgeLevel = document.getElementById('badgeLevel');
+        if (r.water_level < 70) {
+          badgeLevel.className = 'sensor-badge badge-warn';
+          badgeLevel.textContent = 'Low Refill Required';
+          document.getElementById('topLevelFill').classList.add('low');
+        } else {
+          badgeLevel.className = 'sensor-badge badge-optimal';
+          badgeLevel.textContent = 'Optimal';
+          document.getElementById('topLevelFill').classList.remove('low');
+        }
+
+        // Ambient Canopy Humidity (50 - 70%)
+        const humVal = r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 64.5;
+        const valHumElem = document.getElementById('valHumidity');
+        if (valHumElem) valHumElem.textContent = humVal.toFixed(1);
+        const badgeHumidity = document.getElementById('badgeHumidity');
+        if (badgeHumidity) {
+          if (humVal < 50) {
+            badgeHumidity.className = 'sensor-badge badge-warn';
+            badgeHumidity.textContent = 'Dry Air';
+          } else if (humVal > 70) {
+            badgeHumidity.className = 'sensor-badge badge-warn';
+            badgeHumidity.textContent = 'High Humidity';
+          } else {
+            badgeHumidity.className = 'sensor-badge badge-optimal';
+            badgeHumidity.textContent = 'Optimal';
+          }
+        }
+
+        // Overall System Health Status
+        const healthIcon = document.getElementById('systemHealthIcon');
+        const healthText = document.getElementById('systemHealthText');
+        const healthSub = document.getElementById('systemHealthSub');
+
+        const isAnomaly = (r.tds < 600 || r.tds > 900 || r.ph < 5.5 || r.ph > 6.5);
+        if (isAnomaly) {
+          healthIcon.className = 'status-symbol alert';
+          healthIcon.textContent = '!';
+          healthText.textContent = 'FEEDBACK ALERT';
+          healthText.style.color = '#ff5252';
+          healthSub.textContent = 'Nutrient balance out of bounds. Flush cycle scheduled.';
+        } else {
+          healthIcon.className = 'status-symbol normal';
+          healthIcon.textContent = '✓';
+          healthText.textContent = 'NORMAL';
+          healthText.style.color = '#ffffff';
+          healthSub.textContent = 'All nutrient parameters within target setpoints';
+        }
+      } catch (err) {
+        console.error('Latest telemetry error:', err);
+      }
+    }
+
+    // Actuator Controls Sync
+    async function fetchControls() {
+      try {
+        const controls = await Api.getControls();
+        if (!controls) return;
+
+        // Auto Mode
+        const autoCheck = document.getElementById('autoModeToggle');
+        autoCheck.checked = Boolean(controls.auto_mode);
+        document.getElementById('modeStatusText').textContent = controls.auto_mode ? 'AUTO' : 'MANUAL';
+
+        // 1. Fresh Water Submersible Pump
+        const waterState = Boolean(controls.water_pump ?? controls.pump);
+        const waterCheck = document.getElementById('relayToggleWater');
+        if (waterCheck) waterCheck.checked = waterState;
+        const waterStatus = document.getElementById('relayStatusWater');
+        if (waterStatus) {
+          waterStatus.textContent = waterState ? 'ACTIVE (PUMPING)' : 'STANDBY (IDLE)';
+          waterStatus.style.color = waterState ? 'var(--success)' : 'var(--text-muted)';
+        }
+        const waterCard = document.getElementById('relayCardWater');
+        if (waterCard) waterCard.className = `relay-item-card ${waterState ? 'active' : ''}`;
+
+        // 2. Solutioned Water Submersible Pump
+        const solutionState = Boolean(controls.solution_pump);
+        const solutionCheck = document.getElementById('relayToggleSolution');
+        if (solutionCheck) solutionCheck.checked = solutionState;
+        const solutionStatus = document.getElementById('relayStatusSolution');
+        if (solutionStatus) {
+          solutionStatus.textContent = solutionState ? 'ACTIVE (PUMPING)' : 'STANDBY (IDLE)';
+          solutionStatus.style.color = solutionState ? '#e056fd' : 'var(--text-muted)';
+        }
+        const solutionCard = document.getElementById('relayCardSolution');
+        if (solutionCard) solutionCard.className = `relay-item-card ${solutionState ? 'active' : ''}`;
+
+        // 3. Flushing Submersible Pump
+        const flushState = Boolean(controls.flush_pump ?? controls.flush_valve);
+        const flushCheck = document.getElementById('relayToggleFlush');
+        if (flushCheck) flushCheck.checked = flushState;
+        const flushStatus = document.getElementById('relayStatusFlush');
+        if (flushStatus) {
+          flushStatus.textContent = flushState ? 'ACTIVE (FLUSHING)' : 'STANDBY (IDLE)';
+          flushStatus.style.color = flushState ? '#ff5252' : 'var(--text-muted)';
+        }
+        const flushCard = document.getElementById('relayCardFlush');
+        if (flushCard) flushCard.className = `relay-item-card ${flushState ? 'active' : ''}`;
+      } catch (err) {
+        console.error('Controls fetch error:', err);
+      }
+    }
+
+    // Control Toggle Handler
+    window.handleControlToggle = async function(device, isChecked) {
+      try {
+        await Api.updateControl(device, isChecked ? 1 : 0);
+        await fetchControls();
+        await fetchSystemLogs();
+      } catch (err) {
+        alert('Failed to update control relay: ' + err.message);
+        fetchControls(); // revert UI
+      }
+    };
+
+    // Manual Flush Trigger
+    window.handleManualFlush = async function() {
+      const confirmAction = confirm(
+        'Confirm manual hydroponic reservoir flush?\n\n' +
+        'This will immediately stop circulation, open the reservoir drain solenoid valve, and signal the ESP32 controller.'
+      );
+      if (!confirmAction) return;
+
+      const btn = document.getElementById('btnManualFlush');
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Initiating Flush Cycle...';
+        await Api.triggerManualFlush();
+        await fetchControls();
+        await fetchSystemLogs();
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = 'Trigger Manual Flush Sequence';
+        }, 1200);
+      } catch (err) {
+        alert('Manual flush command failed: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = 'Trigger Manual Flush Sequence';
+      }
+    };
+
+    // System Logs Fetcher
+    window.fetchSystemLogs = async function() {
+      try {
+        const filter = document.getElementById('logLevelFilter').value;
+        const res = await Api.getLogs(30, filter);
+        const tbody = document.getElementById('logsTableBody');
+
+        if (!res || !res.logs || res.logs.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" style="text-align: center; color: var(--text-dim); padding: 20px;">No events matching filter.</td></tr>';
+          return;
+        }
+
+        tbody.innerHTML = res.logs.map(log => {
+          const time = new Date(log.created_at).toLocaleString();
+          return `
+            <tr>
+              <td style="font-family: monospace; font-size: 11px; color: var(--text-muted);">${time}</td>
+              <td><span class="log-badge ${log.level}">${log.level}</span></td>
+              <td style="font-weight: 600; color: #7ec8e3;">${log.source}</td>
+              <td style="color: var(--text-main);">${escapeHtml(log.message)}</td>
+            </tr>
+          `;
+        }).join('');
+      } catch (err) {
+        console.error('Logs fetch error:', err);
+      }
+    };
+
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Export to Excel Button Handler
+    window.handleExportExcel = async function() {
+      const btn = document.getElementById('btnExportExcel');
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Generating Excel...';
+        await Api.downloadExcel();
+        btn.textContent = '✓ Downloaded!';
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '📥 Export to Excel (.xlsx)';
+        }, 2000);
+      } catch (err) {
+        alert('Excel export failed: ' + err.message);
+        btn.disabled = false;
+        btn.textContent = '📥 Export to Excel (.xlsx)';
+      }
+    };
+
+    // Theme Mode Toggle (Dark & Light Mode)
+    window.toggleTheme = function() {
+      const isLight = document.body.classList.toggle('light-mode');
+      const theme = isLight ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+      try { localStorage.setItem('aquaplant_theme', theme); } catch(e) {}
+      const btn = document.getElementById('btnThemeToggle');
+      if (btn) btn.innerHTML = isLight ? '🌙 Dark Mode' : '☀️ Light Mode';
+      if (typeof renderChart === 'function') renderChart();
+    };
+
+    // Initialize Theme
+    (function initTheme() {
+      try {
+        const savedTheme = localStorage.getItem('aquaplant_theme') || 'dark';
+        if (savedTheme === 'light') {
+          document.body.classList.add('light-mode');
+          document.documentElement.setAttribute('data-theme', 'light');
+          const btn = document.getElementById('btnThemeToggle');
+          if (btn) btn.innerHTML = '🌙 Dark Mode';
+        }
+      } catch(e) {}
+    })();
+
+    // Logout
+    window.handleLogout = function() {
+      Api.logout();
+    };
+
+    // Modals Management
+    window.openModal = function(modalId) {
+      const modal = document.getElementById(modalId);
+      if (modal) {
+        modal.classList.add('open');
+        if (modalId === 'firmwareModal') loadFirmwarePreview();
+      }
+    };
+
+    window.closeModal = function(modalId) {
+      const modal = document.getElementById(modalId);
+      if (modal) modal.classList.remove('open');
+    };
+
+    // Load & Copy Code Previews
+    async function loadFirmwarePreview() {
+      const pre = document.getElementById('firmwareCodeDisplay');
+      try {
+        const res = await fetch('/firmware/aquaplant_esp32.ino');
+        const text = await res.text();
+        pre.textContent = text;
+      } catch (e) {
+        pre.textContent = 'Unable to load firmware preview directly. Click Download .INO.';
+      }
+    }
+
+    window.copyFirmwareCode = function() {
+      const code = document.getElementById('firmwareCodeDisplay').textContent;
+      navigator.clipboard.writeText(code).then(() => alert('ESP32 Firmware code copied to clipboard!'));
+    };
+
+    // Simulator Presets
+    window.setSimPreset = function(tds, ph, temp, level, humidity = 64.5) {
+      document.getElementById('simTds').value = tds;
+      document.getElementById('simPh').value = ph;
+      document.getElementById('simTemp').value = temp;
+      document.getElementById('simLevel').value = level;
+      if (document.getElementById('simHumidity')) {
+        document.getElementById('simHumidity').value = humidity;
+      }
+    };
+
+    window.submitSimulatedTelemetry = async function() {
+      const payload = {
+        tds: Number(document.getElementById('simTds').value),
+        ph: Number(document.getElementById('simPh').value),
+        temperature: Number(document.getElementById('simTemp').value),
+        water_level: Number(document.getElementById('simLevel').value),
+        humidity: document.getElementById('simHumidity') ? Number(document.getElementById('simHumidity').value) : 64.5
+      };
+
+      try {
+        await Api.simulateTelemetry(payload);
+        closeModal('simulatorModal');
+        await fetchLatestTelemetry();
+        await fetchTelemetryHistory();
+        await fetchSystemLogs();
+        await fetchControls();
+      } catch (err) {
+        alert('Simulator feed error: ' + err.message);
+      }
+    };
+
+    // Initial Boot Sequence
+    resizeCanvas();
+    fetchLatestTelemetry();
+    fetchTelemetryHistory();
+    fetchControls();
+    fetchSystemLogs();
+
+    // Periodic Heartbeats
+    setInterval(fetchLatestTelemetry, 4000);  // Sync latest readings & online status
+    setInterval(fetchControls, 4000);         // Sync actuator relays
+    setInterval(fetchSystemLogs, 8000);       // Sync event logs
+    setInterval(fetchTelemetryHistory, 30000);// Refresh chart data
+  </script>
+</body>
+</html>
