@@ -28,6 +28,13 @@ import {
   findUserByUsername,
   createUser,
   countUsers,
+  listManagedUsers,
+  setUserStatus,
+  setUserRole,
+  deleteUserById,
+  countAdmins,
+  touchUserLastSeen,
+  getUserStatusById,
   insertSensorReading,
   getLatestSensorReading,
   getSensorHistory,
@@ -111,6 +118,26 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+const lastSeenTouch = new Map<number, number>();
+const authStatusCache = new Map<number, { status: string; checkedAt: number }>();
+
+// Suspended / unapproved accounts lose access within one minute of the admin action.
+async function isAccountAuthorized(userId: number): Promise<boolean> {
+  try {
+    const now = Date.now();
+    const cached = authStatusCache.get(userId);
+    if (cached && now - cached.checkedAt < 60_000) {
+      return cached.status === 'approved';
+    }
+    const status = (await getUserStatusById(userId)) || 'approved';
+    authStatusCache.set(userId, { status, checkedAt: now });
+    return status === 'approved';
+  } catch {
+    // Never lock users out because of a transient database hiccup.
+    return true;
+  }
+}
+
 function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextFunction) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -120,14 +147,46 @@ function authenticateToken(req: AuthenticatedRequest, res: Response, next: NextF
     return;
   }
 
-  jwt.verify(token, JWT_SECRET, (err, decodedUser) => {
+  jwt.verify(token, JWT_SECRET, async (err, decodedUser) => {
     if (err) {
       res.status(403).json({ error: 'Invalid or expired session token.' });
       return;
     }
     req.user = decodedUser as any;
+
+    const userId = Number(req.user?.id);
+    if (userId) {
+      const authorized = await isAccountAuthorized(userId);
+      if (!authorized) {
+        res.status(403).json({
+          error: 'Your account is no longer authorized. Please contact an administrator.'
+        });
+        return;
+      }
+
+      // Presence heartbeat for the admin dashboard (at most once per minute per user).
+      const now = Date.now();
+      const previous = lastSeenTouch.get(userId) || 0;
+      if (now - previous > 60_000) {
+        lastSeenTouch.set(userId, now);
+        void touchUserLastSeen(userId);
+      }
+    }
+
     next();
   });
+}
+
+function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (!req.user) {
+    res.status(401).json({ error: 'Authentication required.' });
+    return;
+  }
+  if (req.user.role !== 'admin') {
+    res.status(403).json({ error: 'Administrator privileges required.' });
+    return;
+  }
+  next();
 }
 
 function authenticateDeviceKey(req: Request, res: Response, next: NextFunction) {
@@ -171,21 +230,14 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
     }
 
     const passwordHash = await bcrypt.hash(password, 10);
-    const user = await createUser(username, email, passwordHash, 'operator');
+    const user = await createUser(username, email, passwordHash, 'operator', 'pending');
 
-    await addSystemLog(`New operator registered: ${username} (${email})`, 'INFO', 'WEB_AUTH');
+    await addSystemLog(`New operator registered (pending approval): ${username} (${email})`, 'INFO', 'WEB_AUTH');
 
-    // 12-hour expiry JWT as specified
-    const token = jwt.sign(
-      { id: user.id, username: user.username, email: user.email, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '12h' }
-    );
-
-    res.status(201).json({
-      message: 'Registration successful',
-      token,
-      user: { id: user.id, username: user.username, email: user.email, role: user.role }
+    res.status(202).json({
+      message: 'Account created. An administrator must approve it before you can sign in.',
+      pending: true,
+      user: { id: user.id, username: user.username, email: user.email, role: user.role, status: user.status }
     });
   } catch (error: any) {
     console.error('Registration error:', error);
@@ -214,6 +266,22 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       return;
     }
 
+    const accountStatus = user.status || 'approved';
+    if (accountStatus === 'pending') {
+      res.status(403).json({
+        error: 'Your account is waiting for administrator approval. Please try again later.'
+      });
+      return;
+    }
+    if (accountStatus === 'suspended') {
+      res.status(403).json({
+        error: 'Your account has been suspended by the administrator.'
+      });
+      return;
+    }
+
+    void touchUserLastSeen(user.id);
+
     const token = jwt.sign(
       { id: user.id, username: user.username, email: user.email, role: user.role },
       JWT_SECRET,
@@ -230,6 +298,132 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Login failed due to server error.' });
+  }
+});
+
+// ============================================================================
+// ADMIN: USER AUTHORIZATION & PRESENCE DASHBOARD
+// ============================================================================
+
+// List every account with its approval status and online/offline presence
+app.get('/api/admin/users', authenticateToken, requireAdmin, async (_req: Request, res: Response) => {
+  try {
+    const users = await listManagedUsers();
+    res.json({
+      users,
+      summary: {
+        total: users.length,
+        online: users.filter((u) => u.is_online).length,
+        pending: users.filter((u) => u.status === 'pending').length,
+        suspended: users.filter((u) => u.status === 'suspended').length,
+        admins: users.filter((u) => u.role === 'admin').length
+      }
+    });
+  } catch (error: any) {
+    console.error('Admin user list error:', error);
+    res.status(500).json({ error: 'Failed to load user accounts.' });
+  }
+});
+
+// Approve / re-pend / suspend an account
+app.patch('/api/admin/users/:id/status', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const status = String(req.body?.status || '').toLowerCase();
+
+    if (!['approved', 'pending', 'suspended'].includes(status)) {
+      res.status(400).json({ error: "status must be 'approved', 'pending' or 'suspended'." });
+      return;
+    }
+    if (!id || Number.isNaN(id)) {
+      res.status(400).json({ error: 'Invalid user id.' });
+      return;
+    }
+
+    const users = await listManagedUsers();
+    const target = users.find((u) => u.id === id);
+    if (!target) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    if (target.role === 'admin' && status !== 'approved' && (await countAdmins()) <= 1) {
+      res.status(400).json({ error: 'Cannot suspend the only administrator account.' });
+      return;
+    }
+
+    await setUserStatus(id, status as 'approved' | 'pending' | 'suspended');
+    await addSystemLog(`Administrator set ${target.username} account status to ${status}`, 'INFO', 'WEB_AUTH');
+
+    res.json({ message: `${target.username} is now ${status}.` });
+  } catch (error: any) {
+    console.error('Admin status update error:', error);
+    res.status(500).json({ error: 'Failed to update account status.' });
+  }
+});
+
+// Promote to administrator / demote to operator
+app.patch('/api/admin/users/:id/role', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    const role = String(req.body?.role || '').toLowerCase();
+
+    if (!['admin', 'operator'].includes(role)) {
+      res.status(400).json({ error: "role must be 'admin' or 'operator'." });
+      return;
+    }
+
+    const users = await listManagedUsers();
+    const target = users.find((u) => u.id === id);
+    if (!target) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    if (target.role === 'admin' && role === 'operator' && (await countAdmins()) <= 1) {
+      res.status(400).json({ error: 'Cannot demote the only administrator account.' });
+      return;
+    }
+
+    await setUserRole(id, role as 'admin' | 'operator');
+    await addSystemLog(`Administrator changed ${target.username} role to ${role}`, 'INFO', 'WEB_AUTH');
+
+    res.json({ message: `${target.username} is now ${role}.` });
+  } catch (error: any) {
+    console.error('Admin role update error:', error);
+    res.status(500).json({ error: 'Failed to update account role.' });
+  }
+});
+
+// Remove an account permanently
+app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+
+    if (req.user && Number(req.user.id) === id) {
+      res.status(400).json({ error: 'You cannot delete your own account.' });
+      return;
+    }
+
+    const users = await listManagedUsers();
+    const target = users.find((u) => u.id === id);
+    if (!target) {
+      res.status(404).json({ error: 'User not found.' });
+      return;
+    }
+
+    if (target.role === 'admin' && (await countAdmins()) <= 1) {
+      res.status(400).json({ error: 'Cannot delete the only administrator account.' });
+      return;
+    }
+
+    await deleteUserById(id);
+    await addSystemLog(`Administrator deleted account ${target.username}`, 'WARN', 'WEB_AUTH');
+
+    res.json({ message: `${target.username} has been deleted.` });
+  } catch (error: any) {
+    console.error('Admin delete user error:', error);
+    res.status(500).json({ error: 'Failed to delete account.' });
   }
 });
 

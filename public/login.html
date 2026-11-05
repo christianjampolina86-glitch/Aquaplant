@@ -200,12 +200,16 @@
         await Api.login('admin', 'admin123');
         window.location.href = '/dashboard.html';
       } catch (err) {
-        // If login failed, try registration or direct proceed
+        // If login failed, try registration and only continue when a token is issued
         try {
-          await Api.register('admin', 'admin@aquaplant.local', 'admin123');
-          window.location.href = '/dashboard.html';
+          const reg = await Api.register('admin', 'admin@aquaplant.local', 'admin123');
+          if (reg && reg.token) {
+            window.location.href = '/dashboard.html';
+          } else {
+            showAlert(reg?.message || 'Demo login unavailable. Register an account and wait for admin approval.', 'error');
+          }
         } catch (regErr) {
-          window.location.href = '/dashboard.html';
+          showAlert('Demo login failed. Use the default admin credentials or register an account.', 'error');
         }
       }
     };
@@ -247,7 +251,20 @@
       try {
         btn.disabled = true;
         btn.textContent = 'Registering operator...';
-        await Api.register(username, email, password);
+        const result = await Api.register(username, email, password);
+
+        // New accounts must be approved by an administrator before signing in.
+        if (result && (result.pending || !result.token)) {
+          showAlert(result.message || 'Account created. Waiting for administrator approval.', 'success');
+          btn.disabled = false;
+          btn.textContent = 'Create Authorized Account';
+          document.getElementById('registerForm').reset();
+          switchAuthTab('login');
+          document.getElementById('loginUsername').value = username;
+          document.getElementById('loginPassword').value = '';
+          return;
+        }
+
         showAlert('Registration complete! Launching dashboard...', 'success');
         setTimeout(() => {
           window.location.href = '/dashboard.html';

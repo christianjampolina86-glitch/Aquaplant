@@ -45,6 +45,9 @@ import {
   Eye,
   EyeOff,
   UserPlus,
+  Users,
+  UserCheck,
+  UserX,
   WifiOff
 } from 'lucide-react';
 import {
@@ -275,6 +278,25 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [activeSection, setActiveSection] = useState<'overview' | 'telemetry' | 'actuators' | 'audit-logs'>('overview');
 
+  // Admin: user authorization & presence dashboard
+  const [showUserAdmin, setShowUserAdmin] = useState(false);
+  const [managedUsers, setManagedUsers] = useState<Array<{
+    id: number;
+    username: string;
+    email: string;
+    role: string;
+    status: string;
+    created_at: string;
+    last_seen: string | null;
+    is_online: boolean;
+  }>>([]);
+  const [userAdminLoading, setUserAdminLoading] = useState(false);
+  const [userAdminError, setUserAdminError] = useState('');
+  const [userAdminBusy, setUserAdminBusy] = useState<number | null>(null);
+  const [userAdminSummary, setUserAdminSummary] = useState({
+    total: 0, online: 0, pending: 0, suspended: 0, admins: 0
+  });
+
   const scrollToSection = (sectionId: 'overview' | 'telemetry' | 'actuators' | 'audit-logs') => {
     setActiveSection(sectionId);
     setSidebarOpen(false);
@@ -364,6 +386,7 @@ export default function App() {
   const [loginUsername, setLoginUsername] = useState('admin');
   const [loginPassword, setLoginPassword] = useState('admin123');
   const [loginError, setLoginError] = useState('');
+  const [authNotice, setAuthNotice] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [authScreen, setAuthScreen] = useState<'login' | 'register'>('login');
   const [regUsername, setRegUsername] = useState('');
@@ -617,6 +640,7 @@ export default function App() {
     }
     setLoginLoading(true);
     setLoginError('');
+    setAuthNotice('');
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
@@ -715,6 +739,24 @@ export default function App() {
         setRegLoading(false);
         return;
       }
+
+      // New accounts need an administrator's approval before they can sign in.
+      if (data.pending || !data.token) {
+        setRegLoading(false);
+        setRegUsername('');
+        setRegEmail('');
+        setRegPassword('');
+        setRegConfirm('');
+        setAuthScreen('login');
+        setLoginError('');
+        setLoginUsername(username);
+        setLoginPassword('');
+        setAuthNotice(
+          data.message || 'Account created. An administrator must approve it before you can sign in.'
+        );
+        return;
+      }
+
       setToken(data.token);
       setUser(data.user);
       localStorage.setItem('aquaplant_auth_token', data.token);
@@ -736,6 +778,114 @@ export default function App() {
       setLoginError('Network error connecting to registration service.');
       setRegLoading(false);
     }
+  };
+
+  // ---------------------------------------------------------------------------
+  // ADMIN: user authorization & online presence
+  // ---------------------------------------------------------------------------
+  const adminAuthHeaders = () => ({
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${token || localStorage.getItem('aquaplant_auth_token') || ''}`
+  });
+
+  const fetchManagedUsers = async () => {
+    const t = token || localStorage.getItem('aquaplant_auth_token');
+    if (!t) return;
+    setUserAdminLoading(true);
+    try {
+      const res = await fetch('/api/admin/users', {
+        headers: { Authorization: `Bearer ${t}` }
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setUserAdminError(data.error || 'Failed to load user accounts.');
+      } else {
+        setManagedUsers(data.users || []);
+        if (data.summary) setUserAdminSummary(data.summary);
+        setUserAdminError('');
+      }
+    } catch {
+      setUserAdminError('Network error while loading user accounts.');
+    } finally {
+      setUserAdminLoading(false);
+    }
+  };
+
+  const adminSetStatus = async (id: number, status: 'approved' | 'pending' | 'suspended') => {
+    setUserAdminBusy(id);
+    setUserAdminError('');
+    try {
+      const res = await fetch(`/api/admin/users/${id}/status`, {
+        method: 'PATCH',
+        headers: adminAuthHeaders(),
+        body: JSON.stringify({ status })
+      });
+      const data = await res.json();
+      if (!res.ok) setUserAdminError(data.error || 'Failed to update account.');
+      await fetchManagedUsers();
+    } catch {
+      setUserAdminError('Network error while updating account.');
+    } finally {
+      setUserAdminBusy(null);
+    }
+  };
+
+  const adminSetRole = async (id: number, role: 'admin' | 'operator') => {
+    setUserAdminBusy(id);
+    setUserAdminError('');
+    try {
+      const res = await fetch(`/api/admin/users/${id}/role`, {
+        method: 'PATCH',
+        headers: adminAuthHeaders(),
+        body: JSON.stringify({ role })
+      });
+      const data = await res.json();
+      if (!res.ok) setUserAdminError(data.error || 'Failed to update role.');
+      await fetchManagedUsers();
+    } catch {
+      setUserAdminError('Network error while updating role.');
+    } finally {
+      setUserAdminBusy(null);
+    }
+  };
+
+  const adminDeleteUser = async (id: number, username: string) => {
+    if (!window.confirm(`Delete the account "${username}" permanently? This cannot be undone.`)) return;
+    setUserAdminBusy(id);
+    setUserAdminError('');
+    try {
+      const res = await fetch(`/api/admin/users/${id}`, {
+        method: 'DELETE',
+        headers: adminAuthHeaders()
+      });
+      const data = await res.json();
+      if (!res.ok) setUserAdminError(data.error || 'Failed to delete account.');
+      await fetchManagedUsers();
+    } catch {
+      setUserAdminError('Network error while deleting account.');
+    } finally {
+      setUserAdminBusy(null);
+    }
+  };
+
+  useEffect(() => {
+    if (!showUserAdmin) return;
+    fetchManagedUsers();
+    const timer = setInterval(fetchManagedUsers, 15000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showUserAdmin]);
+
+  const formatLastSeen = (iso: string | null) => {
+    if (!iso) return 'never';
+    const diff = Date.now() - new Date(iso).getTime();
+    if (Number.isNaN(diff)) return 'never';
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
   };
 
 
@@ -2209,6 +2359,13 @@ export default function App() {
                 </div>
               )}
 
+              {authNotice && (
+                <div className="mb-4 p-3 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs flex items-start gap-2">
+                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{authNotice}</span>
+                </div>
+              )}
+
               {authScreen === 'login' ? (
               <>
               <form onSubmit={handleLoginSubmit} className="space-y-4">
@@ -2269,7 +2426,7 @@ export default function App() {
                   No account yet?{' '}
                   <button
                     type="button"
-                    onClick={() => { setLoginError(''); setAuthScreen('register'); }}
+                    onClick={() => { setLoginError(''); setAuthNotice(''); setAuthScreen('register'); }}
                     className="font-bold text-[#00f2fe] hover:underline cursor-pointer"
                   >
                     Register as Operator
@@ -2357,7 +2514,7 @@ export default function App() {
                   Already have an account?{' '}
                   <button
                     type="button"
-                    onClick={() => { setLoginError(''); setAuthScreen('login'); }}
+                    onClick={() => { setLoginError(''); setAuthNotice(''); setAuthScreen('login'); }}
                     className="font-bold text-[#00f2fe] hover:underline cursor-pointer"
                   >
                     Sign In
@@ -2706,6 +2863,40 @@ export default function App() {
               </button>
             </nav>
           </div>
+
+          {/* Group 4: Administration (visible to administrators only) */}
+          {user?.role === 'admin' && (
+            <div>
+              {!sidebarCollapsed && (
+                <div className={`text-[10px] font-mono font-bold uppercase tracking-wider px-3 mb-2 ${themeTextDim}`}>
+                  Administration
+                </div>
+              )}
+              <nav className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowUserAdmin(true);
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                    isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                  title="Authorize operator accounts and see who is online"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Users className="w-4 h-4 shrink-0 text-[#00f2fe]" />
+                    {!sidebarCollapsed && <span className="truncate">User Management</span>}
+                  </div>
+                  {!sidebarCollapsed && userAdminSummary.pending > 0 && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded font-bold bg-amber-500/20 text-amber-400">
+                      {userAdminSummary.pending} NEW
+                    </span>
+                  )}
+                </button>
+              </nav>
+            </div>
+          )}
         </div>
 
         {/* Bottom: Hardware Status & Operator Profile */}
@@ -3791,6 +3982,200 @@ export default function App() {
                 className={`px-4 py-2 ${isDark ? 'bg-[#0d223a] border-[#163252] text-white hover:border-[#00f2fe]' : 'bg-slate-100 border-slate-300 text-slate-800 hover:bg-slate-200'} border text-xs font-semibold rounded-lg cursor-pointer transition`}
               >
                 Copy to Clipboard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Administrator User Management & Presence */}
+      {showUserAdmin && (
+        <div className={`fixed inset-0 z-50 ${isDark ? 'bg-[#02060e]/85' : 'bg-slate-900/60'} backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto`}>
+          <div className={`${isDark ? 'bg-[#081528] border border-[#00f2fe]/60 shadow-[0_0_40px_rgba(0,242,254,0.3)]' : 'bg-white border border-slate-200 shadow-2xl'} max-w-3xl w-full p-5 sm:p-6 flex flex-col rounded-2xl transition-colors max-h-[92vh] overflow-y-auto`}>
+            <div className={`flex justify-between items-start gap-3 mb-4 pb-3 border-b ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-lg bg-[#00f2fe]/15 border border-[#00f2fe]/40 flex items-center justify-center text-[#00f2fe]">
+                  <Users className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className={`text-base font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>User Management</h3>
+                  <p className={`text-[11px] ${themeTextMuted}`}>Approve operator accounts and monitor who is online</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowUserAdmin(false)}
+                className={`${isDark ? 'text-gray-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'} text-xl font-bold cursor-pointer`}
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Summary counters */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+              <div className={`rounded-xl border px-3 py-2 ${isDark ? 'bg-[#020710] border-[#163252]' : 'bg-slate-50 border-slate-200'}`}>
+                <div className={`text-[10px] font-mono uppercase ${themeTextDim}`}>Accounts</div>
+                <div className={`text-lg font-black ${isDark ? 'text-white' : 'text-slate-900'}`}>{userAdminSummary.total}</div>
+              </div>
+              <div className="rounded-xl border px-3 py-2 bg-emerald-500/10 border-emerald-500/30">
+                <div className="text-[10px] font-mono uppercase text-emerald-400">Online</div>
+                <div className="text-lg font-black text-emerald-400">{userAdminSummary.online}</div>
+              </div>
+              <div className="rounded-xl border px-3 py-2 bg-amber-500/10 border-amber-500/30">
+                <div className="text-[10px] font-mono uppercase text-amber-400">Pending</div>
+                <div className="text-lg font-black text-amber-400">{userAdminSummary.pending}</div>
+              </div>
+              <div className="rounded-xl border px-3 py-2 bg-rose-500/10 border-rose-500/30">
+                <div className="text-[10px] font-mono uppercase text-rose-400">Suspended</div>
+                <div className="text-lg font-black text-rose-400">{userAdminSummary.suspended}</div>
+              </div>
+            </div>
+
+            {userAdminError && (
+              <div className="mb-3 p-2.5 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-400 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{userAdminError}</span>
+              </div>
+            )}
+
+            {userAdminLoading && managedUsers.length === 0 ? (
+              <p className={`text-xs ${themeTextMuted} py-8 text-center`}>Loading accounts…</p>
+            ) : managedUsers.length === 0 ? (
+              <p className={`text-xs ${themeTextMuted} py-8 text-center`}>No accounts found.</p>
+            ) : (
+              <div className="space-y-2">
+                {managedUsers.map((u) => {
+                  const isSelf = user?.username === u.username;
+                  const statusClass = u.status === 'approved'
+                    ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30'
+                    : u.status === 'pending'
+                      ? 'bg-amber-500/15 text-amber-400 border-amber-500/30'
+                      : 'bg-rose-500/15 text-rose-400 border-rose-500/30';
+
+                  return (
+                    <div
+                      key={u.id}
+                      className={`rounded-xl border p-3 ${isDark ? 'bg-[#020710] border-[#163252]' : 'bg-slate-50 border-slate-200'}`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`w-2 h-2 rounded-full shrink-0 ${u.is_online ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+                            <span className={`text-xs font-bold ${isDark ? 'text-white' : 'text-slate-900'}`}>{u.username}</span>
+                            {isSelf && (
+                              <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-[#00f2fe]/15 text-[#00f2fe] border border-[#00f2fe]/30">
+                                YOU
+                              </span>
+                            )}
+                            <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border uppercase ${statusClass}`}>
+                              {u.status}
+                            </span>
+                            <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border uppercase ${
+                              u.role === 'admin'
+                                ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
+                                : isDark ? 'bg-slate-800 text-slate-300 border-slate-700' : 'bg-slate-200 text-slate-700 border-slate-300'
+                            }`}>
+                              {u.role}
+                            </span>
+                          </div>
+                          <div className={`text-[11px] mt-1 truncate ${themeTextMuted}`}>{u.email}</div>
+                          <div className={`text-[10px] mt-0.5 font-mono ${themeTextDim}`}>
+                            {u.is_online ? 'Online now' : `Last seen ${formatLastSeen(u.last_seen)}`}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {u.status === 'pending' && (
+                            <button
+                              type="button"
+                              disabled={userAdminBusy === u.id}
+                              onClick={() => adminSetStatus(u.id, 'approved')}
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                            >
+                              <UserCheck className="w-3 h-3" /> Approve
+                            </button>
+                          )}
+
+                          {u.status === 'approved' && (
+                            <button
+                              type="button"
+                              disabled={userAdminBusy === u.id}
+                              onClick={() => adminSetStatus(u.id, 'suspended')}
+                              className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center gap-1 ${
+                                isDark ? 'border-rose-500/40 text-rose-400 hover:bg-rose-500/10' : 'border-rose-300 text-rose-600 hover:bg-rose-50'
+                              }`}
+                            >
+                              <UserX className="w-3 h-3" /> Suspend
+                            </button>
+                          )}
+
+                          {u.status === 'suspended' && (
+                            <button
+                              type="button"
+                              disabled={userAdminBusy === u.id}
+                              onClick={() => adminSetStatus(u.id, 'approved')}
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-bold transition cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                            >
+                              <UserCheck className="w-3 h-3" /> Reactivate
+                            </button>
+                          )}
+
+                          {u.role === 'admin' ? (
+                            <button
+                              type="button"
+                              disabled={userAdminBusy === u.id || isSelf}
+                              onClick={() => adminSetRole(u.id, 'operator')}
+                              title={isSelf ? 'You cannot demote your own account' : 'Demote to operator'}
+                              className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition cursor-pointer disabled:opacity-40 ${
+                                isDark ? 'border-[#163252] text-slate-300 hover:text-white' : 'border-slate-300 text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              Make Operator
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={userAdminBusy === u.id}
+                              onClick={() => adminSetRole(u.id, 'admin')}
+                              className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition cursor-pointer disabled:opacity-40 ${
+                                isDark ? 'border-purple-500/40 text-purple-300 hover:bg-purple-500/10' : 'border-purple-300 text-purple-700 hover:bg-purple-50'
+                              }`}
+                            >
+                              Make Admin
+                            </button>
+                          )}
+
+                          <button
+                            type="button"
+                            disabled={userAdminBusy === u.id || isSelf}
+                            onClick={() => adminDeleteUser(u.id, u.username)}
+                            title={isSelf ? 'You cannot delete your own account' : 'Delete account'}
+                            className={`p-1.5 rounded-lg border transition cursor-pointer disabled:opacity-40 ${
+                              isDark ? 'border-rose-500/30 text-rose-400 hover:bg-rose-500/10' : 'border-rose-200 text-rose-600 hover:bg-rose-50'
+                            }`}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            <div className={`flex items-center justify-between gap-2 mt-4 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
+              <span className={`text-[10px] font-mono ${themeTextDim}`}>
+                {userAdminSummary.total} accounts · {userAdminSummary.admins} admin(s) · auto-refresh 15s
+              </span>
+              <button
+                type="button"
+                onClick={fetchManagedUsers}
+                className={`px-3 py-1.5 rounded-lg border text-[11px] font-semibold transition cursor-pointer flex items-center gap-1.5 ${
+                  isDark ? 'border-[#163252] text-slate-300 hover:text-white' : 'border-slate-300 text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${userAdminLoading ? 'animate-spin' : ''}`} /> Refresh
               </button>
             </div>
           </div>

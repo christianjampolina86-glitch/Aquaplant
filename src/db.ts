@@ -70,6 +70,8 @@ export interface User {
   email: string;
   password_hash: string;
   role: string;
+  status?: string;
+  last_seen?: string | null;
   created_at: string;
 }
 
@@ -250,6 +252,28 @@ let dbConnectionInfo = {
   last_checked: new Date().toISOString()
 };
 
+// Adds the account-authorization columns to a users table created by an older version.
+async function ensureUserColumns(p: mysql.Pool) {
+  try {
+    const [cols] = await p.query<mysql.RowDataPacket[]>(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'`
+    );
+    const names = cols.map((c) => String(c.COLUMN_NAME).toLowerCase());
+
+    if (!names.includes('status')) {
+      await p.query(`ALTER TABLE users ADD COLUMN status VARCHAR(16) NOT NULL DEFAULT 'approved'`);
+      console.log('[AQUAPLANT DB] Added users.status column');
+    }
+    if (!names.includes('last_seen')) {
+      await p.query(`ALTER TABLE users ADD COLUMN last_seen TIMESTAMP NULL DEFAULT NULL`);
+      console.log('[AQUAPLANT DB] Added users.last_seen column');
+    }
+  } catch (err: any) {
+    console.warn('[AQUAPLANT DB] users column migration note:', err?.message || err);
+  }
+}
+
 // Automatic Cloud Database Migration Helper
 async function autoMigrateCloudTables(p: mysql.Pool) {
   try {
@@ -261,9 +285,14 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
         email VARCHAR(128) NOT NULL UNIQUE,
         password_hash VARCHAR(255) NOT NULL,
         role VARCHAR(32) NOT NULL DEFAULT 'operator',
+        status VARCHAR(16) NOT NULL DEFAULT 'approved',
+        last_seen TIMESTAMP NULL DEFAULT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+
+    // Add account-authorization columns to pre-existing installations
+    await ensureUserColumns(p);
 
     // 2. sensor_readings table
     await p.query(`
@@ -600,11 +629,11 @@ export async function findUserByUsername(username: string): Promise<User | null>
   return u || null;
 }
 
-export async function createUser(username: string, email: string, passwordHash: string, role = 'operator'): Promise<User> {
+export async function createUser(username: string, email: string, passwordHash: string, role = 'operator', status = 'approved'): Promise<User> {
   if (isMySqlActive && pool) {
     const [result] = await pool.query<mysql.ResultSetHeader>(
-      'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)',
-      [username, email, passwordHash, role]
+      'INSERT INTO users (username, email, password_hash, role, status) VALUES (?, ?, ?, ?, ?)',
+      [username, email, passwordHash, role, status]
     );
     return {
       id: result.insertId,
@@ -612,6 +641,8 @@ export async function createUser(username: string, email: string, passwordHash: 
       email,
       password_hash: passwordHash,
       role,
+      status,
+      last_seen: null,
       created_at: new Date().toISOString()
     };
   }
@@ -622,6 +653,8 @@ export async function createUser(username: string, email: string, passwordHash: 
     email,
     password_hash: passwordHash,
     role,
+    status,
+    last_seen: null,
     created_at: new Date().toISOString()
   };
   memoryStore.users.push(newUser);
@@ -634,6 +667,115 @@ export async function countUsers(): Promise<number> {
     return rows[0].count;
   }
   return memoryStore.users.length;
+}
+
+// ============================================================================
+// USER ADMINISTRATION (Admin Dashboard)
+// ============================================================================
+
+export interface ManagedUser {
+  id: number;
+  username: string;
+  email: string;
+  role: string;
+  status: string;
+  created_at: string;
+  last_seen: string | null;
+  is_online: boolean;
+}
+
+// A user counts as "online" when their last authenticated request was under 5 minutes ago.
+const ONLINE_WINDOW_MS = 5 * 60 * 1000;
+
+function toManagedUser(u: any): ManagedUser {
+  const lastSeen = u.last_seen ? new Date(u.last_seen) : null;
+  const lastSeenMs = lastSeen ? lastSeen.getTime() : 0;
+  return {
+    id: Number(u.id),
+    username: String(u.username || ''),
+    email: String(u.email || ''),
+    role: String(u.role || 'operator'),
+    status: String(u.status || 'approved'),
+    created_at: u.created_at instanceof Date ? u.created_at.toISOString() : String(u.created_at || ''),
+    last_seen: lastSeen ? lastSeen.toISOString() : null,
+    is_online: lastSeenMs > 0 && Date.now() - lastSeenMs < ONLINE_WINDOW_MS
+  };
+}
+
+export async function listManagedUsers(): Promise<ManagedUser[]> {
+  if (isMySqlActive && pool) {
+    const [rows] = await pool.query<mysql.RowDataPacket[]>(
+      'SELECT id, username, email, role, status, created_at, last_seen FROM users ORDER BY created_at ASC, id ASC'
+    );
+    return rows.map(toManagedUser);
+  }
+  return memoryStore.users.map(toManagedUser);
+}
+
+export async function setUserStatus(id: number, status: 'approved' | 'pending' | 'suspended'): Promise<boolean> {
+  if (isMySqlActive && pool) {
+    const [r] = await pool.query<mysql.ResultSetHeader>('UPDATE users SET status = ? WHERE id = ?', [status, id]);
+    return r.affectedRows > 0;
+  }
+  const u = memoryStore.users.find((x) => x.id === id);
+  if (!u) return false;
+  u.status = status;
+  return true;
+}
+
+export async function setUserRole(id: number, role: 'admin' | 'operator'): Promise<boolean> {
+  if (isMySqlActive && pool) {
+    const [r] = await pool.query<mysql.ResultSetHeader>('UPDATE users SET role = ? WHERE id = ?', [role, id]);
+    return r.affectedRows > 0;
+  }
+  const u = memoryStore.users.find((x) => x.id === id);
+  if (!u) return false;
+  u.role = role;
+  return true;
+}
+
+export async function deleteUserById(id: number): Promise<boolean> {
+  if (isMySqlActive && pool) {
+    const [r] = await pool.query<mysql.ResultSetHeader>('DELETE FROM users WHERE id = ?', [id]);
+    return r.affectedRows > 0;
+  }
+  const idx = memoryStore.users.findIndex((x) => x.id === id);
+  if (idx === -1) return false;
+  memoryStore.users.splice(idx, 1);
+  return true;
+}
+
+export async function countAdmins(): Promise<number> {
+  if (isMySqlActive && pool) {
+    const [rows] = await pool.query<mysql.RowDataPacket[]>(
+      "SELECT COUNT(*) as count FROM users WHERE role = 'admin'"
+    );
+    return rows[0].count;
+  }
+  return memoryStore.users.filter((u) => u.role === 'admin').length;
+}
+
+export async function getUserStatusById(id: number): Promise<string | null> {
+  if (isMySqlActive && pool) {
+    const [rows] = await pool.query<mysql.RowDataPacket[]>('SELECT status FROM users WHERE id = ?', [id]);
+    return rows[0] ? String(rows[0].status || 'approved') : null;
+  }
+  const u = memoryStore.users.find((x) => x.id === id);
+  return u ? (u.status || 'approved') : null;
+}
+
+// Heartbeat used by the admin dashboard to decide who is online.
+export async function touchUserLastSeen(id: number): Promise<void> {
+  try {
+    if (isMySqlActive && pool) {
+      await pool.query('UPDATE users SET last_seen = NOW() WHERE id = ?', [id]);
+      return;
+    }
+    const u = memoryStore.users.find((x) => x.id === id);
+    if (u) u.last_seen = new Date().toISOString();
+  } catch {
+    // Heartbeat failures must never break a request.
+  }
 }
 
 // Sensor Telemetry
