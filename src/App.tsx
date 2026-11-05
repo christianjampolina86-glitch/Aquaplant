@@ -44,6 +44,7 @@ import {
   RefreshCw,
   Eye,
   EyeOff,
+  UserPlus,
   WifiOff
 } from 'lucide-react';
 import {
@@ -364,6 +365,12 @@ export default function App() {
   const [loginPassword, setLoginPassword] = useState('admin123');
   const [loginError, setLoginError] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
+  const [authScreen, setAuthScreen] = useState<'login' | 'register'>('login');
+  const [regUsername, setRegUsername] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirm, setRegConfirm] = useState('');
+  const [regLoading, setRegLoading] = useState(false);
   const [isOfflineMode, setIsOfflineMode] = useState<boolean>(() => {
     try {
       return localStorage.getItem('aquaplant_offline_mode') === 'true';
@@ -672,6 +679,62 @@ export default function App() {
       setLoginError('Demo login connection failed.');
     } finally {
       setLoginLoading(false);
+    }
+  };
+
+  // Register New Operator Account
+  const handleRegisterSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const username = regUsername.trim();
+    const email = regEmail.trim();
+
+    if (!username || !email || !regPassword) {
+      setLoginError('Username, email and password are all required.');
+      return;
+    }
+    if (regPassword.length < 6) {
+      setLoginError('Password must be at least 6 characters long.');
+      return;
+    }
+    if (regPassword !== regConfirm) {
+      setLoginError('The two passwords do not match.');
+      return;
+    }
+
+    setRegLoading(true);
+    setLoginError('');
+    try {
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, email, password: regPassword })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data.error || 'Registration failed. Please try a different username.');
+        setRegLoading(false);
+        return;
+      }
+      setToken(data.token);
+      setUser(data.user);
+      localStorage.setItem('aquaplant_auth_token', data.token);
+      localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
+      localStorage.setItem('aquaplant_mode_chosen', 'true');
+      setIsFirstVisit(false);
+      localStorage.removeItem('aquaplant_explicit_logout');
+      setHasExplicitlyLoggedOut(false);
+      setGuestReadOnly(false);
+      setShowLoginModal(false);
+      setRegLoading(false);
+      setRegUsername('');
+      setRegEmail('');
+      setRegPassword('');
+      setRegConfirm('');
+      setAuthScreen('login');
+      fetchAllData();
+    } catch (err: any) {
+      setLoginError('Network error connecting to registration service.');
+      setRegLoading(false);
     }
   };
 
@@ -2146,6 +2209,8 @@ export default function App() {
                 </div>
               )}
 
+              {authScreen === 'login' ? (
+              <>
               <form onSubmit={handleLoginSubmit} className="space-y-4">
                 <div>
                   <label className={`block text-xs font-semibold ${themeTextMuted} mb-1.5`}>
@@ -2198,6 +2263,109 @@ export default function App() {
                   </button>
                 </div>
               </form>
+
+              <div className="pt-4 mt-4 border-t border-slate-700/30 text-center">
+                <p className={`text-xs ${themeTextMuted}`}>
+                  No account yet?{' '}
+                  <button
+                    type="button"
+                    onClick={() => { setLoginError(''); setAuthScreen('register'); }}
+                    className="font-bold text-[#00f2fe] hover:underline cursor-pointer"
+                  >
+                    Register as Operator
+                  </button>
+                </p>
+              </div>
+              </>
+              ) : (
+              <>
+              <form onSubmit={handleRegisterSubmit} className="space-y-4">
+                <div>
+                  <label className={`block text-xs font-semibold ${themeTextMuted} mb-1.5`}>
+                    Operator Username
+                  </label>
+                  <input
+                    type="text"
+                    value={regUsername}
+                    onChange={(e) => setRegUsername(e.target.value)}
+                    placeholder="e.g. researcher1"
+                    required
+                    autoComplete="username"
+                    className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-500 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
+                  />
+                </div>
+
+                <div>
+                  <label className={`block text-xs font-semibold ${themeTextMuted} mb-1.5`}>
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={regEmail}
+                    onChange={(e) => setRegEmail(e.target.value)}
+                    placeholder="operator@university.edu"
+                    required
+                    autoComplete="email"
+                    className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-500 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
+                  />
+                </div>
+
+                <div>
+                  <label className={`block text-xs font-semibold ${themeTextMuted} mb-1.5`}>
+                    Password (min 6 characters)
+                  </label>
+                  <input
+                    type="password"
+                    value={regPassword}
+                    onChange={(e) => setRegPassword(e.target.value)}
+                    placeholder="••••••••"
+                    minLength={6}
+                    required
+                    autoComplete="new-password"
+                    className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-500 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
+                  />
+                </div>
+
+                <div>
+                  <label className={`block text-xs font-semibold ${themeTextMuted} mb-1.5`}>
+                    Confirm Password
+                  </label>
+                  <input
+                    type="password"
+                    value={regConfirm}
+                    onChange={(e) => setRegConfirm(e.target.value)}
+                    placeholder="••••••••"
+                    minLength={6}
+                    required
+                    autoComplete="new-password"
+                    className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-500 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
+                  />
+                </div>
+
+                <button
+                  type="submit"
+                  disabled={regLoading}
+                  className="w-full py-2.5 rounded-xl font-bold text-xs bg-gradient-to-r from-emerald-400 to-[#00f2fe] text-[#030a16] hover:opacity-90 active:scale-98 transition cursor-pointer shadow-md disabled:opacity-50 flex items-center justify-center gap-1.5"
+                >
+                  <UserPlus className="w-3.5 h-3.5" />
+                  <span>{regLoading ? 'Creating account...' : 'Create Operator Account'}</span>
+                </button>
+              </form>
+
+              <div className="pt-4 mt-4 border-t border-slate-700/30 text-center">
+                <p className={`text-xs ${themeTextMuted}`}>
+                  Already have an account?{' '}
+                  <button
+                    type="button"
+                    onClick={() => { setLoginError(''); setAuthScreen('login'); }}
+                    className="font-bold text-[#00f2fe] hover:underline cursor-pointer"
+                  >
+                    Sign In
+                  </button>
+                </p>
+              </div>
+              </>
+              )}
 
               {/* Fast Offline Jump */}
               <div className="pt-4 border-t border-slate-700/30 mt-4 text-center space-y-2">
