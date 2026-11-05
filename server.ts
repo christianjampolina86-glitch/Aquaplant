@@ -68,19 +68,34 @@ app.use(express.urlencoded({ extended: true }));
 
 // Initialize Database connection pool (MySQL with seamless in-memory fallback)
 let dbStatus = { isMySQL: false, message: 'Initializing...' };
-initDatabase().then((res) => {
-  dbStatus = res;
-});
 
-// Seed default admin account on initial system startup
+// Seed default admin account on initial system startup.
+// IMPORTANT: wait for initDatabase() first, and never let seeding crash the server.
 (async () => {
-  const userCount = await countUsers();
-  if (userCount === 0) {
-    const defaultHash = await bcrypt.hash('admin123', 10);
-    await createUser('admin', 'admin@aquaplant.local', defaultHash, 'admin');
-    console.log('[AQUAPLANT] Default admin account created: username: "admin", password: "admin123"');
+  try {
+    dbStatus = await initDatabase();
+
+    const userCount = await countUsers();
+    if (userCount === 0) {
+      const defaultHash = await bcrypt.hash('admin123', 10);
+      await createUser('admin', 'admin@aquaplant.local', defaultHash, 'admin');
+      console.log('[AQUAPLANT] Default admin account created: username: "admin", password: "admin123"');
+    } else {
+      console.log('[AQUAPLANT] Admin account already present — seed skipped.');
+    }
+  } catch (err: any) {
+    if (err && (err.code === 'ER_DUP_ENTRY' || err.errno === 1062)) {
+      console.log('[AQUAPLANT] Default admin account already exists — seed skipped.');
+    } else {
+      console.error('[AQUAPLANT] Startup seed skipped:', err?.message || err);
+    }
   }
 })();
+
+// Safety net: log unexpected promise rejections instead of terminating the process.
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[AQUAPLANT] Unhandled promise rejection (server kept running):', reason?.message || reason);
+});
 
 // ============================================================================
 // AUTHENTICATION MIDDLEWARES
