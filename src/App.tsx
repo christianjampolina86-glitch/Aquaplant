@@ -2547,6 +2547,16 @@ export default function App() {
                   <span>View Dashboard as Guest (Read-Only)</span>
                 </button>
               </div>
+
+              {/* Separate Administrator Portal */}
+              <div className="pt-4 mt-4 border-t border-slate-700/30 text-center">
+                <a
+                  href="/admin.html"
+                  className="text-xs font-bold text-purple-400 hover:text-purple-300 hover:underline inline-flex items-center gap-1.5"
+                >
+                  🛡️ Administrator Portal → Sign in / Register Admin
+                </a>
+              </div>
             </div>
           </main>
         )}

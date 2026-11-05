@@ -69,6 +69,10 @@ const rawKey = process.env.DEVICE_KEY;
 const DEVICE_KEY = (rawKey && rawKey !== 'val' && rawKey !== 'undefined' && rawKey.trim().length > 0) ? rawKey : 'aquaplant_esp32_device_key_secret_2026';
 const ALLOW_REGISTRATION = process.env.ALLOW_REGISTRATION !== 'false';
 
+// Access code required to create a NEW administrator account from the Admin Portal.
+// Change this in Render -> Environment (ADMIN_SIGNUP_CODE) to your own secret.
+const ADMIN_SIGNUP_CODE = process.env.ADMIN_SIGNUP_CODE || 'AQUAPLANT-ADMIN-2026';
+
 // Enable JSON body parsing and URL-encoded form parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -242,6 +246,52 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Registration failed due to server error.' });
+  }
+});
+
+// 1b. Auth: Register a NEW administrator (requires the admin access code)
+app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
+  try {
+    const { username, email, password, admin_code } = req.body || {};
+
+    if (!username || !email || !password || !admin_code) {
+      res.status(400).json({ error: 'Username, email, password and admin access code are required.' });
+      return;
+    }
+    if (String(admin_code).trim() !== ADMIN_SIGNUP_CODE) {
+      res.status(403).json({ error: 'Invalid administrator access code.' });
+      return;
+    }
+    if (String(password).length < 6) {
+      res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+      return;
+    }
+
+    const existing = await findUserByUsername(username);
+    if (existing) {
+      res.status(409).json({ error: 'Username or email already registered.' });
+      return;
+    }
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    const user = await createUser(username, email, passwordHash, 'admin', 'approved');
+
+    await addSystemLog(`New administrator registered: ${username} (${email})`, 'WARN', 'WEB_AUTH');
+
+    const token = jwt.sign(
+      { id: user.id, username: user.username, email: user.email, role: user.role },
+      JWT_SECRET,
+      { expiresIn: '12h' }
+    );
+
+    res.status(201).json({
+      message: 'Administrator account created',
+      token,
+      user: { id: user.id, username: user.username, email: user.email, role: user.role, status: user.status }
+    });
+  } catch (error: any) {
+    console.error('Admin registration error:', error);
+    res.status(500).json({ error: 'Administrator registration failed due to server error.' });
   }
 });
 
@@ -1469,6 +1519,11 @@ app.get('/login.html', (req: Request, res: Response) => {
 
 app.get('/dashboard.html', (req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+});
+
+// Dedicated Administrator Portal (separate from the monitoring dashboard)
+app.get('/admin.html', (req: Request, res: Response) => {
+  res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
 // Development server setup

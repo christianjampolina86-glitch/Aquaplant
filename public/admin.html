@@ -1,0 +1,678 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AQUAPLANT | Administrator Portal</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🛡️</text></svg>">
+  <style>
+    .adm-header {
+      background: #081528;
+      border-bottom: 1px solid var(--border-color);
+      padding: 14px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+    }
+    .adm-brand { display: flex; align-items: center; gap: 12px; }
+    .adm-logo {
+      width: 42px; height: 42px; border-radius: 10px;
+      background: linear-gradient(135deg, #00f2fe, #4facfe);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 21px; box-shadow: 0 0 16px rgba(0, 242, 254, 0.3);
+    }
+    .adm-title {
+      font-size: 18px; font-weight: 800; letter-spacing: 0.6px; margin: 0;
+      background: linear-gradient(90deg, #ffffff, #00f2fe);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .adm-sub { font-size: 11px; color: var(--text-muted); }
+
+    .adm-main { max-width: 1180px; margin: 26px auto; padding: 0 16px; width: 100%; }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 12px;
+      margin-bottom: 18px;
+    }
+    .stat-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+    }
+    .stat-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); font-family: var(--font-mono); }
+    .stat-value { font-size: 24px; font-weight: 800; margin-top: 2px; color: var(--text-main); }
+    .stat-card.online { border-color: rgba(0, 230, 118, 0.4); background: rgba(0, 230, 118, 0.07); }
+    .stat-card.online .stat-value { color: var(--success); }
+    .stat-card.pending { border-color: rgba(255, 179, 0, 0.4); background: rgba(255, 179, 0, 0.07); }
+    .stat-card.pending .stat-value { color: var(--warning); }
+    .stat-card.suspended { border-color: rgba(255, 82, 82, 0.4); background: rgba(255, 82, 82, 0.07); }
+    .stat-card.suspended .stat-value { color: var(--danger); }
+
+    .toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+    }
+    .search-input {
+      background: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      color: var(--text-main);
+      padding: 9px 12px;
+      font-size: 13px;
+      min-width: 220px;
+      outline: none;
+    }
+    .search-input:focus { border-color: var(--border-focus); }
+
+    .table-wrap {
+      background: var(--bg-card);
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-lg);
+      overflow-x: auto;
+    }
+    table.adm-table { width: 100%; border-collapse: collapse; min-width: 760px; }
+    table.adm-table th {
+      text-align: left; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-dim); font-family: var(--font-mono); font-weight: 700;
+      padding: 12px 14px; border-bottom: 1px solid var(--border-color);
+      background: rgba(0, 0, 0, 0.15);
+    }
+    table.adm-table td {
+      padding: 12px 14px; border-bottom: 1px solid rgba(22, 50, 82, 0.6);
+      font-size: 12px; color: var(--text-main); vertical-align: middle;
+    }
+    table.adm-table tr:last-child td { border-bottom: none; }
+    table.adm-table tr:hover td { background: rgba(0, 242, 254, 0.03); }
+
+    .u-name { display: flex; align-items: center; gap: 7px; font-weight: 700; }
+    .u-email { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: 0 0 auto; }
+    .dot.on { background: var(--success); box-shadow: 0 0 8px var(--success); animation: pulse 1.8s infinite; }
+    .dot.off { background: #47617d; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+
+    .pill {
+      display: inline-block; font-family: var(--font-mono); font-size: 9px;
+      letter-spacing: 0.05em; text-transform: uppercase; font-weight: 700;
+      padding: 3px 7px; border-radius: 999px; border: 1px solid transparent;
+    }
+    .pill.approved { background: rgba(0, 230, 118, 0.12); color: var(--success); border-color: rgba(0, 230, 118, 0.35); }
+    .pill.pending { background: rgba(255, 179, 0, 0.12); color: var(--warning); border-color: rgba(255, 179, 0, 0.35); }
+    .pill.suspended { background: rgba(255, 82, 82, 0.12); color: var(--danger); border-color: rgba(255, 82, 82, 0.35); }
+    .pill.admin { background: rgba(186, 104, 255, 0.12); color: #c77dff; border-color: rgba(186, 104, 255, 0.35); }
+    .pill.operator { background: rgba(140, 162, 186, 0.12); color: var(--text-muted); border-color: rgba(140, 162, 186, 0.3); }
+    .pill.you { background: rgba(0, 242, 254, 0.12); color: var(--cyan-primary); border-color: rgba(0, 242, 254, 0.35); }
+
+    .row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+    .act {
+      border-radius: var(--radius-sm); border: 1px solid var(--border-color);
+      background: transparent; color: var(--text-muted);
+      font-size: 11px; font-weight: 700; padding: 5px 9px; cursor: pointer;
+      transition: all 0.15s ease; white-space: nowrap;
+    }
+    .act:hover:not(:disabled) { color: var(--text-main); border-color: var(--cyan-primary); }
+    .act:disabled { opacity: 0.35; cursor: not-allowed; }
+    .act.approve { background: var(--success); border-color: var(--success); color: #032012; }
+    .act.approve:hover:not(:disabled) { background: #22f08a; color: #032012; }
+    .act.danger { color: var(--danger); border-color: rgba(255, 82, 82, 0.35); }
+    .act.danger:hover:not(:disabled) { background: rgba(255, 82, 82, 0.12); }
+    .act.promote { color: #c77dff; border-color: rgba(186, 104, 255, 0.35); }
+    .act.promote:hover:not(:disabled) { background: rgba(186, 104, 255, 0.12); }
+
+    .empty-state { padding: 40px 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+
+    .foot-note {
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; flex-wrap: wrap; margin-top: 14px;
+      font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);
+    }
+
+    .adm-footer {
+      background: #020710; border-top: 1px solid var(--border-color);
+      padding: 14px 24px; font-size: 11px; color: var(--text-dim);
+      display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px;
+    }
+
+    .code-hint { font-size: 11px; color: var(--text-dim); margin-top: -6px; margin-bottom: 10px; line-height: 1.5; }
+
+    @media (max-width: 640px) {
+      .adm-header { padding: 12px 14px; }
+      .adm-main { margin: 16px auto; }
+      .stat-value { font-size: 20px; }
+      .search-input { min-width: 100%; }
+    }
+  </style>
+</head>
+<body style="min-height: 100vh; display: flex; flex-direction: column;">
+
+  <!-- ===================== HEADER ===================== -->
+  <header class="adm-header">
+    <div class="adm-brand">
+      <div class="adm-logo">🛡️</div>
+      <div>
+        <h1 class="adm-title">AQUAPLANT ADMINISTRATOR PORTAL</h1>
+        <span class="adm-sub">User authorization, roles &amp; live presence monitoring</span>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <a href="/" class="btn btn-outline btn-sm">📊 Monitoring Dashboard</a>
+      <a href="/login.html" class="btn btn-outline btn-sm">👤 Operator Login</a>
+    </div>
+  </header>
+
+  <!-- ===================== AUTH VIEW ===================== -->
+  <main id="authView" class="adm-main" style="max-width: 480px; display: none;">
+    <div class="auth-card" style="width: 100%; padding: 30px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 18px;">
+        <div>
+          <h3 style="font-size: 18px; font-weight: 800; color: #ffffff;">Administrator Access</h3>
+          <p style="font-size: 12px; color: var(--text-muted);">Authorized personnel only</p>
+        </div>
+        <span style="font-size: 24px;">🔐</span>
+      </div>
+
+      <div class="auth-tabs" style="margin-bottom: 18px;">
+        <button type="button" class="auth-tab-btn active" id="tabAdminLogin" onclick="switchAuthTab('login')">Admin Sign In</button>
+        <button type="button" class="auth-tab-btn" id="tabAdminRegister" onclick="switchAuthTab('register')">Register Admin</button>
+      </div>
+
+      <div id="authAlert" class="auth-alert"></div>
+
+      <!-- Admin sign in -->
+      <form id="adminLoginForm" onsubmit="handleAdminLogin(event)">
+        <div class="form-group">
+          <label for="admUsername">Administrator Username or Email</label>
+          <input type="text" id="admUsername" class="form-input" placeholder="admin" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="admPassword">Password</label>
+          <input type="password" id="admPassword" class="form-input" placeholder="••••••••" required autocomplete="current-password">
+        </div>
+        <button type="submit" class="btn btn-cyan" style="width: 100%; padding: 12px; margin-top: 6px; font-size: 14px;" id="admLoginBtn">
+          Enter Administrator Portal
+        </button>
+      </form>
+
+      <!-- Admin registration -->
+      <form id="adminRegisterForm" style="display: none;" onsubmit="handleAdminRegister(event)">
+        <div class="form-group">
+          <label for="regAdmUsername">Administrator Username</label>
+          <input type="text" id="regAdmUsername" class="form-input" placeholder="e.g. admin_maria" required autocomplete="username">
+        </div>
+        <div class="form-group">
+          <label for="regAdmEmail">Email Address</label>
+          <input type="email" id="regAdmEmail" class="form-input" placeholder="admin@university.edu" required autocomplete="email">
+        </div>
+        <div class="form-group">
+          <label for="regAdmPassword">Password (min 6 characters)</label>
+          <input type="password" id="regAdmPassword" class="form-input" placeholder="••••••••" minlength="6" required autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label for="regAdmConfirm">Confirm Password</label>
+          <input type="password" id="regAdmConfirm" class="form-input" placeholder="••••••••" minlength="6" required autocomplete="new-password">
+        </div>
+        <div class="form-group">
+          <label for="regAdmCode">Administrator Access Code</label>
+          <input type="password" id="regAdmCode" class="form-input" placeholder="Provided by the project owner" required>
+        </div>
+        <p class="code-hint">An access code is required so that ordinary visitors cannot create administrator accounts.</p>
+        <button type="submit" class="btn btn-cyan" style="width: 100%; padding: 12px; margin-top: 6px; font-size: 14px;" id="admRegBtn">
+          Create Administrator Account
+        </button>
+      </form>
+
+      <div style="margin-top: 18px; text-align: center; font-size: 11px; color: var(--text-dim);">
+        Protected by JWT 12-Hour Token &amp; Salted Bcrypt Hashing
+      </div>
+    </div>
+  </main>
+
+  <!-- ===================== DASHBOARD VIEW ===================== -->
+  <main id="dashboardView" class="adm-main" style="display: none;">
+    <div style="display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 16px;">
+      <div>
+        <h2 style="font-size: 20px; font-weight: 800; color: var(--text-main); margin: 0;">User Authorization Center</h2>
+        <p style="font-size: 12px; color: var(--text-muted); margin-top: 3px;">
+          Signed in as <strong id="admCurrentUser" style="color: var(--cyan-primary);">—</strong>
+          · <span id="admLastUpdated">—</span>
+        </p>
+      </div>
+      <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+        <button type="button" class="btn btn-outline btn-sm" onclick="refreshUsers()">🔄 Refresh</button>
+        <button type="button" class="btn btn-danger btn-sm" onclick="adminLogout()">Log Out</button>
+      </div>
+    </div>
+
+    <div id="dashAlert" class="auth-alert" style="margin-bottom: 14px;"></div>
+
+    <!-- Summary counters -->
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Accounts</div>
+        <div class="stat-value" id="statTotal">0</div>
+      </div>
+      <div class="stat-card online">
+        <div class="stat-label">Online Now</div>
+        <div class="stat-value" id="statOnline">0</div>
+      </div>
+      <div class="stat-card pending">
+        <div class="stat-label">Pending Approval</div>
+        <div class="stat-value" id="statPending">0</div>
+      </div>
+      <div class="stat-card suspended">
+        <div class="stat-label">Suspended</div>
+        <div class="stat-value" id="statSuspended">0</div>
+      </div>
+    </div>
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <input type="text" id="userSearch" class="search-input" placeholder="🔍 Search username or email…" oninput="renderUsers()">
+      <span style="font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);">
+        Auto-refresh every 15s · <span id="statAdmins">0</span> admin(s)
+      </span>
+    </div>
+
+    <!-- Users table -->
+    <div class="table-wrap">
+      <table class="adm-table">
+        <thead>
+          <tr>
+            <th>Operator</th>
+            <th>Role</th>
+            <th>Status</th>
+            <th>Presence</th>
+            <th style="text-align: right;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="usersTableBody">
+          <tr><td colspan="5" class="empty-state">Loading accounts…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="foot-note">
+      <span id="footSummary">—</span>
+      <span>Online = active within the last 5 minutes</span>
+    </div>
+  </main>
+
+  <footer class="adm-footer">
+    <div>🛡️ <strong>AQUAPLANT</strong> · Administrator Portal · Capstone Engineering Project</div>
+    <div>Node.js Express + MySQL2 · JWT Authorization</div>
+  </footer>
+
+  <script type="module">
+    import { Api } from '/js/api.js';
+
+    let allUsers = [];
+    let summary = { total: 0, online: 0, pending: 0, suspended: 0, admins: 0 };
+    let busyId = null;
+    let pollTimer = null;
+
+    const $ = (id) => document.getElementById(id);
+
+    function esc(value) {
+      return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function showAuthAlert(message, type = 'error') {
+      const box = $('authAlert');
+      box.className = `auth-alert ${type}`;
+      box.textContent = message || '';
+      if (message) box.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+
+    function showDashAlert(message, type = 'error') {
+      const box = $('dashAlert');
+      box.className = `auth-alert ${type}`;
+      box.textContent = message || '';
+    }
+
+    window.switchAuthTab = function (tab) {
+      const loginForm = $('adminLoginForm');
+      const registerForm = $('adminRegisterForm');
+      const loginTab = $('tabAdminLogin');
+      const registerTab = $('tabAdminRegister');
+
+      loginForm.style.display = tab === 'login' ? 'block' : 'none';
+      registerForm.style.display = tab === 'register' ? 'block' : 'none';
+      loginTab.classList.toggle('active', tab === 'login');
+      registerTab.classList.toggle('active', tab === 'register');
+      showAuthAlert('');
+    };
+
+    async function apiFetch(path, options = {}) {
+      const token = Api.getToken();
+      const headers = {
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
+      };
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(path, { ...options, headers });
+      let data = null;
+      try { data = await res.json(); } catch (e) { data = null; }
+      return { ok: res.ok, status: res.status, data };
+    }
+
+    function showDashboardView() {
+      $('authView').style.display = 'none';
+      $('dashboardView').style.display = 'block';
+      const current = Api.getUser();
+      $('admCurrentUser').textContent = current?.username || 'administrator';
+    }
+
+    function showAuthView() {
+      $('dashboardView').style.display = 'none';
+      $('authView').style.display = 'block';
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function applyPayload(payload) {
+      allUsers = Array.isArray(payload?.users) ? payload.users : [];
+      summary = payload?.summary || {
+        total: allUsers.length,
+        online: allUsers.filter((u) => u.is_online).length,
+        pending: allUsers.filter((u) => u.status === 'pending').length,
+        suspended: allUsers.filter((u) => u.status === 'suspended').length,
+        admins: allUsers.filter((u) => u.role === 'admin').length
+      };
+      $('statTotal').textContent = summary.total ?? allUsers.length;
+      $('statOnline').textContent = summary.online ?? 0;
+      $('statPending').textContent = summary.pending ?? 0;
+      $('statSuspended').textContent = summary.suspended ?? 0;
+      $('statAdmins').textContent = summary.admins ?? 0;
+      $('admLastUpdated').textContent = 'updated ' + new Date().toLocaleTimeString();
+      renderUsers();
+    }
+
+    function timeAgo(iso) {
+      if (!iso) return 'never';
+      const diff = Date.now() - new Date(iso).getTime();
+      if (Number.isNaN(diff)) return 'never';
+      const mins = Math.floor(diff / 60000);
+      if (mins < 1) return 'just now';
+      if (mins < 60) return mins + 'm ago';
+      const hours = Math.floor(mins / 60);
+      if (hours < 24) return hours + 'h ago';
+      return Math.floor(hours / 24) + 'd ago';
+    }
+
+    window.renderUsers = function () {
+      const term = ($('userSearch')?.value || '').trim().toLowerCase();
+      const current = Api.getUser();
+      const rows = allUsers.filter((u) =>
+        !term || u.username.toLowerCase().includes(term) || u.email.toLowerCase().includes(term)
+      );
+
+      const body = $('usersTableBody');
+      if (!rows.length) {
+        body.innerHTML = '<tr><td colspan="5" class="empty-state">No accounts match your search.</td></tr>';
+        $('footSummary').textContent = allUsers.length + ' account(s) total';
+        return;
+      }
+
+      body.innerHTML = rows.map((u) => {
+        const isSelf = current && current.username === u.username;
+        const actions = [];
+
+        if (u.status === 'pending') {
+          actions.push(`<button class="act approve" data-action="approve" data-id="${u.id}">Approve</button>`);
+        }
+        if (u.status === 'approved') {
+          actions.push(`<button class="act danger" data-action="suspend" data-id="${u.id}">Suspend</button>`);
+        }
+        if (u.status === 'suspended') {
+          actions.push(`<button class="act approve" data-action="approve" data-id="${u.id}">Reactivate</button>`);
+        }
+        if (u.role === 'admin') {
+          actions.push(`<button class="act" data-action="operator" data-id="${u.id}" ${isSelf ? 'disabled title="You cannot demote yourself"' : ''}>Make Operator</button>`);
+        } else {
+          actions.push(`<button class="act promote" data-action="admin" data-id="${u.id}">Make Admin</button>`);
+        }
+        actions.push(`<button class="act danger" data-action="delete" data-id="${u.id}" ${isSelf ? 'disabled title="You cannot delete yourself"' : ''}>Delete</button>`);
+
+        return `
+          <tr>
+            <td>
+              <div class="u-name">
+                <span class="dot ${u.is_online ? 'on' : 'off'}"></span>
+                <span>${esc(u.username)}</span>
+                ${isSelf ? '<span class="pill you">you</span>' : ''}
+              </div>
+              <div class="u-email">${esc(u.email)}</div>
+            </td>
+            <td><span class="pill ${u.role === 'admin' ? 'admin' : 'operator'}">${esc(u.role)}</span></td>
+            <td><span class="pill ${esc(u.status)}">${esc(u.status)}</span></td>
+            <td style="font-family: var(--font-mono); font-size: 11px; color: ${u.is_online ? 'var(--success)' : 'var(--text-muted)'};">
+              ${u.is_online ? '● Online now' : timeAgo(u.last_seen)}
+            </td>
+            <td>
+              <div class="row-actions" style="justify-content: flex-end;">
+                ${actions.join('')}
+              </div>
+            </td>
+          </tr>
+        `;
+      }).join('');
+
+      $('footSummary').textContent =
+        `${rows.length} shown · ${allUsers.length} total · ${summary.online} online`;
+    };
+
+    async function loadUsers(showSpinner = false) {
+      if (showSpinner) showDashAlert('');
+      const res = await apiFetch('/api/admin/users');
+      if (!res.ok) {
+        if (res.status === 401 || res.status === 403) {
+          Api.setToken(null);
+          Api.setUser(null);
+          showAuthView();
+          showAuthAlert(res.data?.error || 'Your session is no longer valid. Please sign in again.');
+          return false;
+        }
+        showDashAlert(res.data?.error || 'Failed to load accounts.');
+        return false;
+      }
+      applyPayload(res.data);
+      return true;
+    }
+
+    window.refreshUsers = async function () {
+      await loadUsers();
+    };
+
+    window.adminLogout = function () {
+      Api.setToken(null);
+      Api.setUser(null);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      showAuthView();
+      showAuthAlert('Signed out of the administrator portal.', 'success');
+      $('admPassword').value = '';
+    };
+
+    async function performAction(action, id) {
+      const target = allUsers.find((u) => Number(u.id) === Number(id));
+      if (!target) return;
+
+      busyId = Number(id);
+      showDashAlert('');
+
+      try {
+        let res;
+        if (action === 'approve') {
+          res = await apiFetch(`/api/admin/users/${id}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: 'approved' })
+          });
+        } else if (action === 'suspend') {
+          res = await apiFetch(`/api/admin/users/${id}/status`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: 'suspended' })
+          });
+        } else if (action === 'admin') {
+          res = await apiFetch(`/api/admin/users/${id}/role`, {
+            method: 'PATCH',
+            body: JSON.stringify({ role: 'admin' })
+          });
+        } else if (action === 'operator') {
+          res = await apiFetch(`/api/admin/users/${id}/role`, {
+            method: 'PATCH',
+            body: JSON.stringify({ role: 'operator' })
+          });
+        } else if (action === 'delete') {
+          if (!window.confirm(`Delete the account "${target.username}" permanently? This cannot be undone.`)) {
+            busyId = null;
+            return;
+          }
+          res = await apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' });
+        }
+
+        if (res && !res.ok) {
+          showDashAlert(res.data?.error || 'Action failed.');
+        } else {
+          showDashAlert('Action completed successfully.', 'success');
+        }
+      } catch (e) {
+        showDashAlert('Network error while contacting the server.');
+      } finally {
+        busyId = null;
+        await loadUsers();
+      }
+    }
+
+    $('usersTableBody').addEventListener('click', (event) => {
+      const btn = event.target.closest('button[data-action]');
+      if (!btn || btn.disabled) return;
+      performAction(btn.dataset.action, btn.dataset.id);
+    });
+
+    window.handleAdminLogin = async function (event) {
+      event.preventDefault();
+      const username = $('admUsername').value.trim();
+      const password = $('admPassword').value;
+      const btn = $('admLoginBtn');
+
+      if (!username || !password) {
+        showAuthAlert('Please enter your administrator username and password.');
+        return;
+      }
+
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Verifying administrator…';
+        const data = await Api.login(username, password);
+
+        if (!data?.user || data.user.role !== 'admin') {
+          Api.setToken(null);
+          Api.setUser(null);
+          showAuthAlert('This account is not an administrator. Use the Operator Login instead.');
+          return;
+        }
+
+        const ok = await loadUsers(true);
+        if (ok) {
+          showDashboardView();
+          showDashAlert(`Welcome, ${data.user.username}.`, 'success');
+          startPolling();
+        }
+      } catch (err) {
+        showAuthAlert(err.message || 'Administrator sign-in failed.');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Enter Administrator Portal';
+      }
+    };
+
+    window.handleAdminRegister = async function (event) {
+      event.preventDefault();
+      const username = $('regAdmUsername').value.trim();
+      const email = $('regAdmEmail').value.trim();
+      const password = $('regAdmPassword').value;
+      const confirm = $('regAdmConfirm').value;
+      const adminCode = $('regAdmCode').value;
+      const btn = $('admRegBtn');
+
+      if (!username || !email || !password || !adminCode) {
+        showAuthAlert('All fields are required.');
+        return;
+      }
+      if (password.length < 6) {
+        showAuthAlert('Password must be at least 6 characters long.');
+        return;
+      }
+      if (password !== confirm) {
+        showAuthAlert('The two passwords do not match.');
+        return;
+      }
+
+      try {
+        btn.disabled = true;
+        btn.textContent = 'Creating administrator…';
+        const res = await apiFetch('/api/auth/register-admin', {
+          method: 'POST',
+          body: JSON.stringify({ username, email, password, admin_code: adminCode })
+        });
+
+        if (!res.ok) {
+          showAuthAlert(res.data?.error || 'Administrator registration failed.');
+          return;
+        }
+
+        Api.setToken(res.data.token);
+        Api.setUser(res.data.user);
+        $('adminRegisterForm').reset();
+
+        const ok = await loadUsers(true);
+        if (ok) {
+          showDashboardView();
+          showDashAlert(`Administrator "${username}" created.`, 'success');
+          startPolling();
+        }
+      } catch (err) {
+        showAuthAlert('Network error while creating the administrator account.');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create Administrator Account';
+      }
+    };
+
+    function startPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(() => {
+        if ($('dashboardView').style.display !== 'none') loadUsers();
+      }, 15000);
+    }
+
+    async function boot() {
+      const token = Api.getToken();
+      if (!token) {
+        showAuthView();
+        return;
+      }
+      const ok = await loadUsers(true);
+      if (ok) {
+        showDashboardView();
+        startPolling();
+      } else {
+        showAuthView();
+      }
+    }
+
+    boot();
+  </script>
+</body>
+</html>
