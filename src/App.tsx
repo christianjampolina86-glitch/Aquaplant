@@ -421,15 +421,6 @@ export default function App() {
     } catch {}
     return 'online';
   });
-  const [preLoginView, setPreLoginView] = useState<'setup' | 'login'>(() => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return 'setup';
-    try {
-      if (localStorage.getItem('aquaplant_explicit_logout') === 'true') return 'login';
-      const chosen = localStorage.getItem('aquaplant_mode_chosen');
-      if (!chosen) return 'setup'; // First time opening: show dedicated Wi-Fi Setup & ESP32 Connection Dashboard!
-    } catch {}
-    return 'setup';
-  });
   const [offlineStationName, setOfflineStationName] = useState('Greenhouse Alpha (Station #1)');
   const [offlineOperatorName, setOfflineOperatorName] = useState('Field Operator');
 
@@ -561,6 +552,11 @@ export default function App() {
     setHasExplicitlyLoggedOut(true);
     setShowLoginModal(false);
     setLoginError('');
+    // Always return to the sign-in form (never the Wi-Fi gateway)
+    setAuthScreen('login');
+    setAuthNotice('');
+    setLoginUsername('');
+    setLoginPassword('');
   };
 
   // Enter Standalone Offline Field Mode
@@ -1830,7 +1826,7 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => { setShowWifiSetupPage(false); setPreLoginView('login'); }}
+                  onClick={() => setShowWifiSetupPage(false)}
                   className={`px-3.5 py-2.5 rounded-xl border text-xs font-semibold transition active:scale-95 flex items-center gap-1.5 cursor-pointer ${
                     isDark ? 'border-[#163252] bg-[#030a16] text-slate-200 hover:text-white' : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
                   }`}
@@ -2257,12 +2253,8 @@ export default function App() {
                 <span className={`font-black text-sm tracking-wide ${isDark ? 'text-white' : 'text-slate-900'}`}>
                   AQUAPLANT
                 </span>
-                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold ${
-                  preLoginView === 'setup'
-                    ? 'bg-[#00f2fe]/10 text-[#00f2fe] border-[#00f2fe]/30'
-                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                }`}>
-                  {preLoginView === 'setup' ? 'Hardware & Wi-Fi Gateway' : 'Operator Login'}
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold bg-emerald-500/10 text-emerald-400 border-emerald-500/30">
+                  Operator Login
                 </span>
               </div>
               <p className={`text-[11px] ${themeTextMuted} hidden sm:block`}>
@@ -2272,27 +2264,6 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* View Switcher Button */}
-            {preLoginView === 'setup' ? (
-              <button
-                type="button"
-                onClick={() => setPreLoginView('login')}
-                className="px-3 py-1.5 rounded-lg bg-[#00f2fe]/10 hover:bg-[#00f2fe]/20 text-[#00f2fe] border border-[#00f2fe]/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <Lock className="w-3.5 h-3.5" />
-                <span>Operator Login →</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setPreLoginView('setup')}
-                className="px-3 py-1.5 rounded-lg bg-amber-400/10 hover:bg-amber-400/20 text-amber-400 border border-amber-400/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <Wifi className="w-3.5 h-3.5" />
-                <span>← Wi-Fi Setup & ESP32</span>
-              </button>
-            )}
-
             <div className={`font-mono text-xs px-2.5 py-1 rounded border hidden md:block ${isDark ? 'bg-[#030a16] border-[#163252] text-[#00f2fe]' : 'bg-slate-100 border-slate-300 text-slate-700'}`}>
               {clockString || '--:--:--'}
             </div>
@@ -2311,15 +2282,9 @@ export default function App() {
         </header>
 
         {/* =========================================================================
-            VIEW 1: DEDICATED PRE-LOGIN WI-FI SETUP & ESP32 CONNECTION DASHBOARD
+            DEDICATED LOGIN DASHBOARD (Operator + Administrator)
            ========================================================================= */}
-        {preLoginView === 'setup' ? (
-          renderWifiSetupPage()
-        ) : (
-          /* =========================================================================
-              VIEW 2: DEDICATED OPERATOR LOGIN DASHBOARD
-             ========================================================================= */
-          <main className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 w-full max-w-md mx-auto">
+        <main className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 w-full max-w-md mx-auto">
             {/* Post-Logout Notice */}
             {hasExplicitlyLoggedOut && (
               <div className="w-full mb-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between gap-2 shadow-sm">
@@ -2337,18 +2302,6 @@ export default function App() {
               </div>
             )}
 
-            {/* Back to Setup Link */}
-            <div className="w-full mb-3 flex items-center justify-between">
-              <button
-                type="button"
-                onClick={() => setPreLoginView('setup')}
-                className="text-xs text-[#00f2fe] hover:underline flex items-center gap-1.5 cursor-pointer font-medium"
-              >
-                <ChevronLeft className="w-4 h-4" />
-                <span>Wi-Fi Setup & ESP32 Connection Dashboard</span>
-              </button>
-            </div>
-
             <div className={`w-full ${themeCardBg} rounded-2xl p-6 sm:p-8 border shadow-xl relative overflow-hidden backdrop-blur-md`}>
               {/* Header / Logo */}
               <div className="text-center mb-6">
@@ -2359,7 +2312,7 @@ export default function App() {
                   AQUAPLANT
                 </h1>
                 <p className={`text-xs ${themeTextMuted} mt-1`}>
-                  Operator Authentication & Cloud Access
+                  Operator &amp; Administrator Access
                 </p>
               </div>
 
@@ -2560,17 +2513,20 @@ export default function App() {
               </div>
 
               {/* Separate Administrator Portal */}
-              <div className="pt-4 mt-4 border-t border-slate-700/30 text-center">
+              <div className="pt-4 mt-4 border-t border-slate-700/30">
                 <a
                   href="/admin.html"
-                  className="text-xs font-bold text-purple-400 hover:text-purple-300 hover:underline inline-flex items-center gap-1.5"
+                  className={`w-full py-2 rounded-xl text-xs font-bold border transition inline-flex items-center justify-center gap-1.5 ${
+                    isDark
+                      ? 'border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20'
+                      : 'border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100'
+                  }`}
                 >
-                  🛡️ Administrator Portal → Sign in / Register Admin
+                  🛡️ Administrator Login / Register
                 </a>
               </div>
             </div>
           </main>
-        )}
 
         {/* Minimal Footer */}
         <footer className={`py-4 px-6 text-center text-xs text-slate-500 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
