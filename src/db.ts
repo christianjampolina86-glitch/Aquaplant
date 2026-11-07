@@ -629,6 +629,22 @@ export async function findUserByUsername(username: string): Promise<User | null>
   return u || null;
 }
 
+export async function findUserByUsernameOrEmail(username: string, email: string): Promise<User | null> {
+  if (isMySqlActive && pool) {
+    const [rows] = await pool.query<mysql.RowDataPacket[]>(
+      'SELECT * FROM users WHERE username = ? OR email = ? LIMIT 1',
+      [username, email]
+    );
+    return (rows[0] as User) || null;
+  }
+  const u = memoryStore.users.find(
+    (x) =>
+      x.username.toLowerCase() === username.toLowerCase() ||
+      x.email.toLowerCase() === email.toLowerCase()
+  );
+  return u || null;
+}
+
 export async function createUser(username: string, email: string, passwordHash: string, role = 'operator', status = 'approved'): Promise<User> {
   if (isMySqlActive && pool) {
     const [result] = await pool.query<mysql.ResultSetHeader>(

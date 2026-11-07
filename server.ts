@@ -26,6 +26,7 @@ import { fileURLToPath } from 'url';
 import {
   initDatabase,
   findUserByUsername,
+  findUserByUsernameOrEmail,
   createUser,
   countUsers,
   listManagedUsers,
@@ -227,9 +228,9 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       return;
     }
 
-    const existing = await findUserByUsername(username);
+    const existing = await findUserByUsernameOrEmail(username, email);
     if (existing) {
-      res.status(409).json({ error: 'Username or email already registered.' });
+      res.status(409).json({ error: 'That username or email is already registered. Try signing in instead.' });
       return;
     }
 
@@ -244,6 +245,10 @@ app.post('/api/auth/register', async (req: Request, res: Response) => {
       user: { id: user.id, username: user.username, email: user.email, role: user.role, status: user.status }
     });
   } catch (error: any) {
+    if (error && (error.code === 'ER_DUP_ENTRY' || error.errno === 1062)) {
+      res.status(409).json({ error: 'That username or email is already registered. Try signing in instead.' });
+      return;
+    }
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Registration failed due to server error.' });
   }
@@ -267,9 +272,9 @@ app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
       return;
     }
 
-    const existing = await findUserByUsername(username);
+    const existing = await findUserByUsernameOrEmail(username, email);
     if (existing) {
-      res.status(409).json({ error: 'Username or email already registered.' });
+      res.status(409).json({ error: 'That username or email is already registered. Try signing in instead.' });
       return;
     }
 
@@ -290,6 +295,10 @@ app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
       user: { id: user.id, username: user.username, email: user.email, role: user.role, status: user.status }
     });
   } catch (error: any) {
+    if (error && (error.code === 'ER_DUP_ENTRY' || error.errno === 1062)) {
+      res.status(409).json({ error: 'That username or email is already registered. Try signing in instead.' });
+      return;
+    }
     console.error('Admin registration error:', error);
     res.status(500).json({ error: 'Administrator registration failed due to server error.' });
   }
