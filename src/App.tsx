@@ -276,6 +276,8 @@ export default function App() {
   // Menu Sidebar State
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Full Wi-Fi Setup & ESP32 Connection page opened from inside the dashboard
+  const [showWifiSetupPage, setShowWifiSetupPage] = useState(false);
   const [activeSection, setActiveSection] = useState<'overview' | 'telemetry' | 'actuators' | 'audit-logs'>('overview');
 
   // Admin: user authorization & presence dashboard
@@ -1778,80 +1780,13 @@ export default function App() {
   // This triggers when the user clicks Log Out (hasExplicitlyLoggedOut) OR when there is no active token/offline session
   const showLoginDashboard = hasExplicitlyLoggedOut || (!token && !isOfflineMode && !guestReadOnly);
 
-  if (showLoginDashboard) {
-    return (
-      <div className={`min-h-screen ${isDark ? 'bg-[#030a16] text-[#f0f6fc]' : 'bg-[#f4f7fb] text-slate-800'} flex flex-col justify-between font-sans transition-colors duration-200 selection:bg-[#00f2fe] selection:text-[#030a16]`}>
-        {/* Navigation & Status Header */}
-        <header className={`px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 border-b ${
-          isDark ? 'border-[#163252] bg-[#061222]/90' : 'border-slate-200 bg-white/90'
-        } backdrop-blur-md sticky top-0 z-40`}>
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-[#00f2fe]/20 border border-[#00f2fe]/30 flex items-center justify-center text-lg text-emerald-400 font-bold shadow-sm">
-              🌱
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className={`font-black text-sm tracking-wide ${isDark ? 'text-white' : 'text-slate-900'}`}>
-                  AQUAPLANT
-                </span>
-                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold ${
-                  preLoginView === 'setup'
-                    ? 'bg-[#00f2fe]/10 text-[#00f2fe] border-[#00f2fe]/30'
-                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                }`}>
-                  {preLoginView === 'setup' ? 'Hardware & Wi-Fi Gateway' : 'Operator Login'}
-                </span>
-              </div>
-              <p className={`text-[11px] ${themeTextMuted} hidden sm:block`}>
-                ESP32 Automated Hydroponics Monitoring & Nutrient Control Station
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2 sm:gap-3">
-            {/* View Switcher Button */}
-            {preLoginView === 'setup' ? (
-              <button
-                type="button"
-                onClick={() => setPreLoginView('login')}
-                className="px-3 py-1.5 rounded-lg bg-[#00f2fe]/10 hover:bg-[#00f2fe]/20 text-[#00f2fe] border border-[#00f2fe]/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <Lock className="w-3.5 h-3.5" />
-                <span>Operator Login →</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setPreLoginView('setup')}
-                className="px-3 py-1.5 rounded-lg bg-amber-400/10 hover:bg-amber-400/20 text-amber-400 border border-amber-400/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
-              >
-                <Wifi className="w-3.5 h-3.5" />
-                <span>← Wi-Fi Setup & ESP32</span>
-              </button>
-            )}
-
-            <div className={`font-mono text-xs px-2.5 py-1 rounded border hidden md:block ${isDark ? 'bg-[#030a16] border-[#163252] text-[#00f2fe]' : 'bg-slate-100 border-slate-300 text-slate-700'}`}>
-              {clockString || '--:--:--'}
-            </div>
-
-            <button
-              type="button"
-              onClick={toggleTheme}
-              className={`p-2 rounded-xl border transition cursor-pointer ${
-                isDark ? 'border-[#163252] bg-[#061222] text-amber-400 hover:text-white' : 'border-slate-300 bg-white text-slate-600 hover:text-slate-900 shadow-sm'
-              }`}
-              title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
-            >
-              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-            </button>
-          </div>
-        </header>
-
-        {/* =========================================================================
-            VIEW 1: DEDICATED PRE-LOGIN WI-FI SETUP & ESP32 CONNECTION DASHBOARD
-           ========================================================================= */}
-        {preLoginView === 'setup' ? (
-          <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
+  // ==========================================================================
+  //  REUSABLE WI-FI SETUP & ESP32 CONNECTION PAGE
+  //  Used by the pre-login gateway AND from inside the monitoring dashboard
+  //  (sidebar item + top menu button).
+  // ==========================================================================
+  const renderWifiSetupPage = () => (
+          <div className="flex-1 p-4 sm:p-6 lg:p-8 max-w-7xl w-full mx-auto space-y-6">
             {/* Top Offline / Welcome Banner */}
             <div className={`p-4 sm:p-5 rounded-2xl border flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shadow-sm ${
               !isBrowserOnline
@@ -1895,7 +1830,7 @@ export default function App() {
 
                 <button
                   type="button"
-                  onClick={() => setPreLoginView('login')}
+                  onClick={() => { setShowWifiSetupPage(false); setPreLoginView('login'); }}
                   className={`px-3.5 py-2.5 rounded-xl border text-xs font-semibold transition active:scale-95 flex items-center gap-1.5 cursor-pointer ${
                     isDark ? 'border-[#163252] bg-[#030a16] text-slate-200 hover:text-white' : 'border-slate-300 bg-slate-50 text-slate-700 hover:bg-slate-100'
                   }`}
@@ -2303,7 +2238,83 @@ export default function App() {
                 </div>
               </div>
             </div>
-          </main>
+          </div>
+  );
+
+  if (showLoginDashboard) {
+    return (
+      <div className={`min-h-screen ${isDark ? 'bg-[#030a16] text-[#f0f6fc]' : 'bg-[#f4f7fb] text-slate-800'} flex flex-col justify-between font-sans transition-colors duration-200 selection:bg-[#00f2fe] selection:text-[#030a16]`}>
+        {/* Navigation & Status Header */}
+        <header className={`px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 border-b ${
+          isDark ? 'border-[#163252] bg-[#061222]/90' : 'border-slate-200 bg-white/90'
+        } backdrop-blur-md sticky top-0 z-40`}>
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-[#00f2fe]/20 border border-[#00f2fe]/30 flex items-center justify-center text-lg text-emerald-400 font-bold shadow-sm">
+              🌱
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className={`font-black text-sm tracking-wide ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  AQUAPLANT
+                </span>
+                <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold ${
+                  preLoginView === 'setup'
+                    ? 'bg-[#00f2fe]/10 text-[#00f2fe] border-[#00f2fe]/30'
+                    : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+                }`}>
+                  {preLoginView === 'setup' ? 'Hardware & Wi-Fi Gateway' : 'Operator Login'}
+                </span>
+              </div>
+              <p className={`text-[11px] ${themeTextMuted} hidden sm:block`}>
+                ESP32 Automated Hydroponics Monitoring & Nutrient Control Station
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* View Switcher Button */}
+            {preLoginView === 'setup' ? (
+              <button
+                type="button"
+                onClick={() => setPreLoginView('login')}
+                className="px-3 py-1.5 rounded-lg bg-[#00f2fe]/10 hover:bg-[#00f2fe]/20 text-[#00f2fe] border border-[#00f2fe]/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                <Lock className="w-3.5 h-3.5" />
+                <span>Operator Login →</span>
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setPreLoginView('setup')}
+                className="px-3 py-1.5 rounded-lg bg-amber-400/10 hover:bg-amber-400/20 text-amber-400 border border-amber-400/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm"
+              >
+                <Wifi className="w-3.5 h-3.5" />
+                <span>← Wi-Fi Setup & ESP32</span>
+              </button>
+            )}
+
+            <div className={`font-mono text-xs px-2.5 py-1 rounded border hidden md:block ${isDark ? 'bg-[#030a16] border-[#163252] text-[#00f2fe]' : 'bg-slate-100 border-slate-300 text-slate-700'}`}>
+              {clockString || '--:--:--'}
+            </div>
+
+            <button
+              type="button"
+              onClick={toggleTheme}
+              className={`p-2 rounded-xl border transition cursor-pointer ${
+                isDark ? 'border-[#163252] bg-[#061222] text-amber-400 hover:text-white' : 'border-slate-300 bg-white text-slate-600 hover:text-slate-900 shadow-sm'
+              }`}
+              title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+            >
+              {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+          </div>
+        </header>
+
+        {/* =========================================================================
+            VIEW 1: DEDICATED PRE-LOGIN WI-FI SETUP & ESP32 CONNECTION DASHBOARD
+           ========================================================================= */}
+        {preLoginView === 'setup' ? (
+          renderWifiSetupPage()
         ) : (
           /* =========================================================================
               VIEW 2: DEDICATED OPERATOR LOGIN DASHBOARD
@@ -2809,19 +2820,19 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setConnectTab('wifi');
-                  setShowConnectModal(true);
-                  fetchEsp32Config();
+                  setShowWifiSetupPage(true);
                   setSidebarOpen(false);
                 }}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                  isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  showWifiSetupPage
+                    ? (isDark ? 'bg-[#00f2fe]/10 text-[#00f2fe] border border-[#00f2fe]/30 font-bold' : 'bg-cyan-50 text-cyan-900 border border-cyan-200 font-bold')
+                    : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
                 }`}
-                title="Configure ESP32 Wi-Fi & Hotspot Failover"
+                title="Wi-Fi Setup & ESP32 Connection — opens inside the dashboard"
               >
                 <div className="flex items-center gap-3 min-w-0">
                   <Wifi className="w-4 h-4 shrink-0 text-amber-400" />
-                  {!sidebarCollapsed && <span className="truncate">Wi-Fi & Failover Setup</span>}
+                  {!sidebarCollapsed && <span className="truncate">Wi-Fi Setup</span>}
                 </div>
                 {!sidebarCollapsed && (
                   <span className="text-[10px] font-mono px-1.5 py-0.5 rounded font-bold bg-amber-500/20 text-amber-400">
@@ -3004,14 +3015,22 @@ export default function App() {
             >
               <Menu className="w-5 h-5" />
             </button>
-            <div>
+
+            {/* Brand Logo Lockup (matches the sidebar) */}
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-base sm:text-lg text-emerald-400 font-bold shadow-sm shrink-0">
+              🌱
+            </div>
+
+            <div className="min-w-0">
               <div className="text-[11px] font-mono text-emerald-400 uppercase tracking-wider font-semibold flex items-center gap-1.5">
                 <span className="text-[#00f2fe] font-black tracking-wider">AQUAPLANT</span>
-                <span className="text-slate-500">•</span>
-                <span>Closed-Loop Station</span>
+                <span className="text-slate-500 hidden sm:inline">•</span>
+                <span className="hidden sm:inline">Closed-Loop Station</span>
               </div>
               <div className={`text-sm font-bold ${isDark ? 'text-white' : 'text-slate-900'} capitalize`}>
-                {activeSection === 'telemetry'
+                {showWifiSetupPage
+                  ? 'Wi-Fi Setup & ESP32'
+                  : activeSection === 'telemetry'
                   ? 'AQUAPLANT Telemetry'
                   : activeSection === 'overview'
                   ? 'AQUAPLANT Overview'
@@ -3082,6 +3101,22 @@ export default function App() {
               <Smartphone className="w-3.5 h-3.5" />
               <span className="hidden md:inline">SMS Gateway</span>
               <span className={`w-2 h-2 rounded-full ${smsSettings?.is_enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+            </button>
+
+            {/* Wi-Fi Setup Button (opens the setup page inside the dashboard) */}
+            <button
+              type="button"
+              onClick={() => setShowWifiSetupPage(true)}
+              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition cursor-pointer ${
+                showWifiSetupPage
+                  ? (isDark ? 'bg-[#00f2fe]/10 border-[#00f2fe]/40 text-[#00f2fe]' : 'bg-cyan-50 border-cyan-300 text-cyan-800')
+                  : (isDark ? 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:border-[#00f2fe]/30' : 'bg-slate-100 border-slate-300 text-slate-700 hover:text-slate-900')
+              }`}
+              title="Open Wi-Fi Setup & ESP32 Connection inside the dashboard"
+            >
+              <Wifi className="w-3.5 h-3.5 text-amber-400" />
+              <span className="hidden sm:inline">Wi-Fi Setup</span>
+              <span className="sm:hidden">Wi-Fi</span>
             </button>
 
             {/* Connect to ESP32 Button */}
@@ -3764,6 +3799,49 @@ export default function App() {
         </div>
       </footer>
     </div>
+
+      {/* =========================================================================
+          WI-FI SETUP & ESP32 CONNECTION PAGE
+          Opened from the sidebar ("Wi-Fi Setup") or the top menu button.
+         ========================================================================= */}
+      {showWifiSetupPage && (
+        <div className={`fixed inset-0 z-[80] overflow-y-auto ${isDark ? 'bg-[#030a16]' : 'bg-[#f4f7fb]'}`}>
+          {/* Page Top Bar */}
+          <div className={`sticky top-0 z-10 flex items-center justify-between gap-3 px-4 sm:px-6 py-3 border-b backdrop-blur-md ${
+            isDark ? 'border-[#163252] bg-[#061222]/95' : 'border-slate-200 bg-white/95 shadow-sm'
+          }`}>
+            <div className="flex items-center gap-3 min-w-0">
+              <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-lg shrink-0">
+                🌱
+              </div>
+              <div className="min-w-0">
+                <div className="text-[11px] font-mono text-emerald-400 uppercase tracking-wider font-semibold flex items-center gap-1.5">
+                  <span className="text-[#00f2fe] font-black tracking-wider">AQUAPLANT</span>
+                  <span className="text-slate-500">•</span>
+                  <span>Station Tools</span>
+                </div>
+                <div className={`text-sm font-bold truncate ${isDark ? 'text-white' : 'text-slate-900'}`}>
+                  Wi-Fi Setup &amp; ESP32 Connection
+                </div>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowWifiSetupPage(false)}
+              className="px-3 py-1.5 rounded-lg bg-[#00f2fe]/10 hover:bg-[#00f2fe]/20 text-[#00f2fe] border border-[#00f2fe]/30 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shrink-0"
+            >
+              <ChevronLeft className="w-4 h-4" />
+              <span>Back to Dashboard</span>
+            </button>
+          </div>
+
+          {/* Reused setup UI (same as the pre-login gateway) */}
+          <div className="pb-10">
+            {renderWifiSetupPage()}
+          </div>
+        </div>
+      )}
 
       {/* MODAL 1: Telemetry & Anomaly Simulator */}
       {showSimulator && (
