@@ -1523,15 +1523,18 @@ app.use('/firmware', express.static(path.join(__dirname, 'firmware')));
 
 // Direct HTML pages mapping for capstone standalone deliverables
 app.get('/login.html', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, 'public', 'login.html'));
 });
 
 app.get('/dashboard.html', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
 });
 
 // Dedicated Administrator Portal (separate from the monitoring dashboard)
 app.get('/admin.html', (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 

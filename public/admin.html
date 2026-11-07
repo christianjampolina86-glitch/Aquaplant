@@ -354,6 +354,8 @@
       showAuthAlert('');
     };
 
+    // Every request gets a hard 25-second limit, so the buttons can never
+    // stay stuck on "Creating administrator…" if the connection stalls.
     async function apiFetch(path, options = {}) {
       const token = Api.getToken();
       const headers = {
@@ -362,10 +364,28 @@
       };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const res = await fetch(path, { ...options, headers });
-      let data = null;
-      try { data = await res.json(); } catch (e) { data = null; }
-      return { ok: res.ok, status: res.status, data };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 25000);
+
+      try {
+        const res = await fetch(path, { ...options, headers, signal: controller.signal });
+        let data = null;
+        try { data = await res.json(); } catch (e) { data = null; }
+        return { ok: res.ok, status: res.status, data };
+      } catch (err) {
+        const timedOut = err && err.name === 'AbortError';
+        return {
+          ok: false,
+          status: 0,
+          data: {
+            error: timedOut
+              ? 'The server took too long to respond. Please check your internet connection and try again.'
+              : 'Could not reach the server. Please check your internet connection and try again.'
+          }
+        };
+      } finally {
+        clearTimeout(timer);
+      }
     }
 
     function showDashboardView() {
@@ -379,6 +399,18 @@
       $('dashboardView').style.display = 'none';
       $('authView').style.display = 'block';
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+
+      // Always leave the auth buttons in a usable state.
+      const loginBtn = $('admLoginBtn');
+      if (loginBtn) {
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Enter Administrator Portal';
+      }
+      const regBtn = $('admRegBtn');
+      if (regBtn) {
+        regBtn.disabled = false;
+        regBtn.textContent = 'Create Administrator Account';
+      }
     }
 
     function applyPayload(payload) {
@@ -571,26 +603,39 @@
         return;
       }
 
-      try {
-        btn.disabled = true;
-        btn.textContent = 'Verifying administrator…';
-        const data = await Api.login(username, password);
+      btn.disabled = true;
+      btn.textContent = 'Verifying administrator…';
+      showAuthAlert('');
 
-        if (!data?.user || data.user.role !== 'admin') {
-          Api.setToken(null);
-          Api.setUser(null);
+      try {
+        const res = await apiFetch('/api/auth/login', {
+          method: 'POST',
+          body: JSON.stringify({ username, password })
+        });
+
+        if (!res.ok) {
+          showAuthAlert(res.data?.error || 'Administrator sign-in failed.');
+          return;
+        }
+
+        const data = res.data || {};
+        if (!data.token || !data.user || data.user.role !== 'admin') {
           showAuthAlert('This account is not an administrator. Use the Operator Login instead.');
           return;
         }
 
-        const ok = await loadUsers(true);
-        if (ok) {
-          showDashboardView();
-          showDashAlert(`Welcome, ${data.user.username}.`, 'success');
-          startPolling();
-        }
-      } catch (err) {
-        showAuthAlert(err.message || 'Administrator sign-in failed.');
+        Api.setToken(data.token);
+        Api.setUser(data.user);
+        localStorage.removeItem('aquaplant_explicit_logout');
+
+        // Show the portal immediately. Loading the account list afterwards
+        // means a slow connection can never look like a frozen button.
+        showDashboardView();
+        showDashAlert(`Welcome, ${data.user.username}. Loading accounts…`, 'success');
+        startPolling();
+
+        const ok = await loadUsers();
+        if (ok) showDashAlert(`Welcome, ${data.user.username}.`, 'success');
       } finally {
         btn.disabled = false;
         btn.textContent = 'Enter Administrator Portal';
@@ -619,31 +664,49 @@
         return;
       }
 
+      btn.disabled = true;
+      btn.textContent = 'Creating administrator…';
+      showAuthAlert('');
+
       try {
-        btn.disabled = true;
-        btn.textContent = 'Creating administrator…';
         const res = await apiFetch('/api/auth/register-admin', {
           method: 'POST',
           body: JSON.stringify({ username, email, password, admin_code: adminCode })
         });
 
         if (!res.ok) {
-          showAuthAlert(res.data?.error || 'Administrator registration failed.');
+          const message = res.data?.error || 'Administrator registration failed.';
+
+          // Already registered? Move them to the sign-in tab with the
+          // username filled in so they can get in straight away.
+          if (res.status === 409) {
+            $('admUsername').value = username;
+            switchAuthTab('login');
+            showAuthAlert(message);
+            return;
+          }
+
+          showAuthAlert(message);
+          return;
+        }
+
+        if (!res.data || !res.data.token || !res.data.user) {
+          showAuthAlert('The server returned an unexpected response. Please try signing in instead.');
           return;
         }
 
         Api.setToken(res.data.token);
         Api.setUser(res.data.user);
+        localStorage.removeItem('aquaplant_explicit_logout');
         $('adminRegisterForm').reset();
 
-        const ok = await loadUsers(true);
-        if (ok) {
-          showDashboardView();
-          showDashAlert(`Administrator "${username}" created.`, 'success');
-          startPolling();
-        }
-      } catch (err) {
-        showAuthAlert('Network error while creating the administrator account.');
+        // Enter the portal immediately, then load the account list.
+        showDashboardView();
+        showDashAlert(`Administrator "${username}" created. Loading accounts…`, 'success');
+        startPolling();
+
+        const ok = await loadUsers();
+        if (ok) showDashAlert(`Administrator "${username}" created.`, 'success');
       } finally {
         btn.disabled = false;
         btn.textContent = 'Create Administrator Account';
@@ -663,9 +726,11 @@
         showAuthView();
         return;
       }
+
+      // Show the portal right away using the saved session, then confirm it.
+      showDashboardView();
       const ok = await loadUsers(true);
       if (ok) {
-        showDashboardView();
         startPolling();
       } else {
         showAuthView();
