@@ -232,14 +232,16 @@ export default function App() {
   });
 
   // Telemetry & Hardware State
+  // Starts at zero: real numbers only appear once the ESP32 sends a packet
+  // (or a reading is loaded from the cloud database).
   const [latestReading, setLatestReading] = useState<SensorReading | null>({
-    id: 1,
-    tds: 745.2,
-    ph: 6.08,
-    temperature: 24.2,
-    water_level: 86.5,
-    humidity: 64.5,
-    recorded_at: new Date().toISOString()
+    id: 0,
+    tds: 0,
+    ph: 0,
+    temperature: 0,
+    water_level: 0,
+    humidity: 0,
+    recorded_at: ''
   });
 
   // Offline mode: records captured while the station has no internet
@@ -253,8 +255,8 @@ export default function App() {
   }, [latestReading]);
 
   const [esp32Status, setEsp32Status] = useState<{ is_online: boolean; last_seen_ago: string }>({
-    is_online: true,
-    last_seen_ago: 'Online now'
+    is_online: false,
+    last_seen_ago: 'No telemetry yet'
   });
 
   const [controls, setControls] = useState<ControlStates>({
@@ -520,6 +522,9 @@ export default function App() {
   const [simTemp, setSimTemp] = useState(24.5);
   const [simLevel, setSimLevel] = useState(85);
   const [simHumidity, setSimHumidity] = useState(65);
+  const [simLoading, setSimLoading] = useState(false);
+  const [simError, setSimError] = useState('');
+  const [simSuccess, setSimSuccess] = useState('');
 
   // Code Display Cache
   const [firmwareCode, setFirmwareCode] = useState<string>('Loading firmware source...');
@@ -1027,7 +1032,10 @@ export default function App() {
     if (isOfflineMode) {
       // Standalone field mode: keep local telemetry active with gentle sensor fluctuations
       const prev = latestReadingRef.current;
-      if (prev) {
+      const hasBaseline =
+        !!prev &&
+        (prev.tds > 0 || prev.ph > 0 || prev.temperature > 0 || prev.water_level > 0);
+      if (prev && hasBaseline) {
         const driftTds = (Math.random() - 0.5) * 3;
         const driftPh = (Math.random() - 0.5) * 0.03;
         const driftTemp = (Math.random() - 0.5) * 0.1;
@@ -1643,7 +1651,7 @@ export default function App() {
     ctx.beginPath();
     historyData.forEach((d, idx) => {
       const x = getX(idx);
-      const y = getY_HUMIDITY(d.humidity || 65);
+      const y = getY_HUMIDITY(d.humidity ?? 0);
       if (idx === 0) ctx.moveTo(x, y);
       else ctx.lineTo(x, y);
     });
@@ -1665,7 +1673,7 @@ export default function App() {
         { y: getY_TDS(hoverData.item.tds), color: isDark ? '#00f2fe' : '#0284c7' },
         { y: getY_PH(hoverData.item.ph), color: isDark ? '#e056fd' : '#a855f7' },
         { y: getY_TEMP(hoverData.item.temperature), color: isDark ? '#f0932b' : '#d97706' },
-        { y: getY_HUMIDITY(hoverData.item.humidity || 65), color: isDark ? '#00e676' : '#16a34a' }
+        { y: getY_HUMIDITY(hoverData.item.humidity ?? 0), color: isDark ? '#00e676' : '#16a34a' }
       ];
 
       pts.forEach((p) => {
@@ -1710,7 +1718,7 @@ export default function App() {
       ctx.fillText(`Temp:  ${hoverData.item.temperature.toFixed(1)} °C`, tx + 10, ty + 74);
 
       ctx.fillStyle = isDark ? '#00e676' : '#16a34a';
-      ctx.fillText(`Humid: ${(hoverData.item.humidity || 65).toFixed(1)} % RH`, tx + 10, ty + 92);
+      ctx.fillText(`Humid: ${(hoverData.item.humidity ?? 0).toFixed(1)} % RH`, tx + 10, ty + 92);
     }
   }, [historyData, hoverData, theme]);
 
@@ -1858,27 +1866,62 @@ export default function App() {
   };
 
 
-  // Inject Simulated Telemetry
+  // Inject Simulated Telemetry (Diagnostics & Calibration)
   const handleSimulateSubmit = async () => {
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
+    setSimError('');
+    setSimSuccess('');
 
-      await fetch('/api/simulator/reading', {
+    const values = {
+      tds: Number(simTds),
+      ph: Number(simPh),
+      temperature: Number(simTemp),
+      water_level: Number(simLevel),
+      humidity: Number(simHumidity)
+    };
+    if (Object.values(values).some((v) => !Number.isFinite(v))) {
+      setSimError('Please enter valid numbers in every field.');
+      return;
+    }
+    if (isOfflineMode) {
+      setSimError('Diagnostics need an internet connection. Press "Go Online" and sign in first.');
+      return;
+    }
+
+    const authToken = token || localStorage.getItem('aquaplant_auth_token');
+    if (!authToken) {
+      setSimError('Your session has expired. Please sign in again.');
+      return;
+    }
+
+    setSimLoading(true);
+    try {
+      const res = await fetch('/api/simulator/reading', {
         method: 'POST',
-        headers,
-        body: JSON.stringify({
-          tds: simTds,
-          ph: simPh,
-          temperature: simTemp,
-          water_level: simLevel,
-          humidity: simHumidity
-        })
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify(values)
       });
-      setShowSimulator(false);
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        setSimError(
+          data.error || `The server rejected the diagnostic reading (HTTP ${res.status}).`
+        );
+        return;
+      }
+
+      setSimSuccess('Diagnostic reading applied and saved to the database.');
       fetchAllData();
-    } catch (err) {
-      alert('Simulation injection failed');
+      setTimeout(() => {
+        setShowSimulator(false);
+        setSimSuccess('');
+      }, 1200);
+    } catch {
+      setSimError('Network error: could not reach the server. Check your connection and try again.');
+    } finally {
+      setSimLoading(false);
     }
   };
 
@@ -1905,9 +1948,18 @@ export default function App() {
   };
 
   // Health Status Logic
+  // Live values fall back to 0 (never to an invented demo number).
+  const liveTds = latestReading?.tds ?? 0;
+  const livePh = latestReading?.ph ?? 0;
+  const liveTemp = latestReading?.temperature ?? 0;
+  const liveLevel = latestReading?.water_level ?? 0;
+  const liveHumidity = latestReading?.humidity ?? 0;
+  const hasLiveTelemetry =
+    liveTds > 0 || livePh > 0 || liveTemp > 0 || liveLevel > 0 || liveHumidity > 0;
+
   const isAnomaly =
-    latestReading &&
-    (latestReading.tds < 600 || latestReading.tds > 900 || latestReading.ph < 5.5 || latestReading.ph > 6.5);
+    hasLiveTelemetry &&
+    (liveTds < 600 || liveTds > 900 || livePh < 5.5 || livePh > 6.5);
 
   // Theme-aware style helpers
   const themeCardBg = isDark ? 'bg-[#081528] border-[#163252]' : 'bg-white border-slate-200 shadow-sm';
@@ -2944,6 +2996,8 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
+                  setSimError('');
+                  setSimSuccess('');
                   setShowSimulator(true);
                   setSidebarOpen(false);
                 }}
@@ -3321,21 +3375,33 @@ export default function App() {
             <div className="flex items-center gap-4">
               <div
                 className={`w-14 h-14 rounded-xl flex items-center justify-center text-2xl font-bold border ${
-                  isAnomaly
+                  !hasLiveTelemetry
+                    ? (isDark ? 'bg-slate-500/10 border-slate-600/40 text-slate-400' : 'bg-slate-100 border-slate-300 text-slate-500')
+                    : isAnomaly
                     ? 'bg-[#ff5252]/15 border-[#ff5252]/40 text-[#ff5252]'
                     : 'bg-[#00e676]/15 border-[#00e676]/40 text-[#00e676]'
                 }`}
               >
-                {isAnomaly ? <AlertTriangle className="w-7 h-7" /> : <CheckCircle2 className="w-7 h-7" />}
+                {!hasLiveTelemetry ? (
+                  <Activity className="w-7 h-7" />
+                ) : isAnomaly ? (
+                  <AlertTriangle className="w-7 h-7" />
+                ) : (
+                  <CheckCircle2 className="w-7 h-7" />
+                )}
               </div>
               <div>
                 <div
-                  className={`text-2xl font-extrabold ${isAnomaly ? 'text-[#ff5252]' : themeTextMain}`}
+                  className={`text-2xl font-extrabold ${
+                    !hasLiveTelemetry ? themeTextMuted : isAnomaly ? 'text-[#ff5252]' : themeTextMain
+                  }`}
                 >
-                  {isAnomaly ? 'FEEDBACK ALERT' : 'OPERATIONAL NORMAL'}
+                  {!hasLiveTelemetry ? 'AWAITING DATA' : isAnomaly ? 'FEEDBACK ALERT' : 'OPERATIONAL NORMAL'}
                 </div>
                 <div className={`text-xs ${themeTextMuted}`}>
-                  {isAnomaly
+                  {!hasLiveTelemetry
+                    ? 'No sensor packet received yet — all measurements read 0'
+                    : isAnomaly
                     ? 'Nutrient parameter breached setpoint; auto-flush triggered'
                     : 'All chemical setpoints stabilized within biological bands'}
                 </div>
@@ -3382,17 +3448,17 @@ export default function App() {
               <div className="flex justify-between items-baseline mb-1">
                 <span className={`text-xs ${themeTextMuted}`}>Current Depth Level</span>
                 <span className={`font-mono text-xl font-bold ${isDark ? 'text-[#00f2fe]' : 'text-cyan-800'}`}>
-                  {latestReading ? latestReading.water_level.toFixed(1) : '85.0'}%
+                  {liveLevel.toFixed(1)}%
                 </span>
               </div>
               <div className={`w-full h-4 ${isDark ? 'bg-[#030d1a] border-[#163252]' : 'bg-slate-100 border-slate-200'} border rounded-full overflow-hidden p-0.5`}>
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${
-                    (latestReading?.water_level || 85) < 70
+                    hasLiveTelemetry && liveLevel < 70
                       ? 'bg-gradient-to-r from-[#ff5252] to-[#ffa502]'
                       : 'bg-gradient-to-r from-[#00c9a7] via-[#00f2fe] to-[#4facfe]'
                   }`}
-                  style={{ width: `${Math.min(100, Math.max(0, latestReading?.water_level || 85))}%` }}
+                  style={{ width: `${Math.min(100, Math.max(0, liveLevel))}%` }}
                 />
               </div>
               <div className={`flex justify-between text-[10px] ${themeTextDim} mt-1`}>
@@ -3417,7 +3483,7 @@ export default function App() {
           {/* TDS Card */}
           <div
             className={`${themeCardBg} rounded-2xl p-5 shadow-lg transition-all relative overflow-hidden ${
-              (latestReading?.tds || 750) < 600 || (latestReading?.tds || 750) > 900
+              hasLiveTelemetry && (liveTds < 600 || liveTds > 900)
                 ? (isDark ? 'border-[#ff5252] shadow-[0_0_20px_rgba(255,82,82,0.15)]' : 'border-rose-400 ring-2 ring-rose-200 bg-rose-50/20')
                 : (isDark ? 'hover:border-[#285788]' : 'hover:border-slate-300')
             }`}
@@ -3428,23 +3494,25 @@ export default function App() {
               </span>
               <span
                 className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${
-                  (latestReading?.tds || 750) < 600
-                    ? (isDark ? 'bg-[#ff5252]/20 text-[#ff5252] border border-[#ff5252]/40' : 'bg-rose-100 text-rose-700 border border-rose-300')
-                    : (latestReading?.tds || 750) > 900
+                  !hasLiveTelemetry
+                    ? (isDark ? 'bg-slate-500/10 text-slate-400 border border-slate-600/40' : 'bg-slate-100 text-slate-500 border border-slate-300')
+                    : liveTds < 600 || liveTds > 900
                     ? (isDark ? 'bg-[#ff5252]/20 text-[#ff5252] border border-[#ff5252]/40' : 'bg-rose-100 text-rose-700 border border-rose-300')
                     : (isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
                 }`}
               >
-                {(latestReading?.tds || 750) < 600
+                {!hasLiveTelemetry
+                  ? 'No Data'
+                  : liveTds < 600
                   ? 'Low Nutrient'
-                  : (latestReading?.tds || 750) > 900
+                  : liveTds > 900
                   ? 'Salt Buildup'
                   : 'Optimal'}
               </span>
             </div>
             <div className="flex items-baseline gap-2 mb-2">
               <span className={`font-mono text-4xl font-extrabold ${themeTextMain} tracking-tight`}>
-                {latestReading ? latestReading.tds.toFixed(1) : '750.0'}
+                {liveTds.toFixed(1)}
               </span>
               <span className={`text-sm font-semibold ${themeTextMuted}`}>ppm</span>
             </div>
@@ -3457,7 +3525,7 @@ export default function App() {
           {/* pH Card */}
           <div
             className={`${themeCardBg} rounded-2xl p-5 shadow-lg transition-all relative overflow-hidden ${
-              (latestReading?.ph || 6.1) < 5.5 || (latestReading?.ph || 6.1) > 6.5
+              hasLiveTelemetry && (livePh < 5.5 || livePh > 6.5)
                 ? (isDark ? 'border-[#ff5252] shadow-[0_0_20px_rgba(255,82,82,0.15)]' : 'border-rose-400 ring-2 ring-rose-200 bg-rose-50/20')
                 : (isDark ? 'hover:border-[#285788]' : 'hover:border-slate-300')
             }`}
@@ -3468,23 +3536,25 @@ export default function App() {
               </span>
               <span
                 className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${
-                  (latestReading?.ph || 6.1) < 5.5
-                    ? (isDark ? 'bg-[#ff5252]/20 text-[#ff5252] border border-[#ff5252]/40' : 'bg-rose-100 text-rose-700 border border-rose-300')
-                    : (latestReading?.ph || 6.1) > 6.5
+                  !hasLiveTelemetry
+                    ? (isDark ? 'bg-slate-500/10 text-slate-400 border border-slate-600/40' : 'bg-slate-100 text-slate-500 border border-slate-300')
+                    : livePh < 5.5 || livePh > 6.5
                     ? (isDark ? 'bg-[#ff5252]/20 text-[#ff5252] border border-[#ff5252]/40' : 'bg-rose-100 text-rose-700 border border-rose-300')
                     : (isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
                 }`}
               >
-                {(latestReading?.ph || 6.1) < 5.5
+                {!hasLiveTelemetry
+                  ? 'No Data'
+                  : livePh < 5.5
                   ? 'Acidic'
-                  : (latestReading?.ph || 6.1) > 6.5
+                  : livePh > 6.5
                   ? 'Alkaline'
                   : 'Optimal'}
               </span>
             </div>
             <div className="flex items-baseline gap-2 mb-2">
               <span className={`font-mono text-4xl font-extrabold ${themeTextMain} tracking-tight`}>
-                {latestReading ? latestReading.ph.toFixed(2) : '6.08'}
+                {livePh.toFixed(2)}
               </span>
               <span className={`text-sm font-semibold ${themeTextMuted}`}>pH</span>
             </div>
@@ -3500,13 +3570,17 @@ export default function App() {
               <span className={`text-xs font-bold ${themeTextMuted} flex items-center gap-1.5`}>
                 <Thermometer className="w-4 h-4 text-[#f0932b]" /> Water Temperature
               </span>
-              <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300'}`}>
-                Optimal
+              <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${
+                !hasLiveTelemetry
+                  ? (isDark ? 'bg-slate-500/10 text-slate-400 border border-slate-600/40' : 'bg-slate-100 text-slate-500 border border-slate-300')
+                  : (isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
+              }`}>
+                {hasLiveTelemetry ? 'Optimal' : 'No Data'}
               </span>
             </div>
             <div className="flex items-baseline gap-2 mb-2">
               <span className={`font-mono text-4xl font-extrabold ${themeTextMain} tracking-tight`}>
-                {latestReading ? latestReading.temperature.toFixed(1) : '24.2'}
+                {liveTemp.toFixed(1)}
               </span>
               <span className={`text-sm font-semibold ${themeTextMuted}`}>°C</span>
             </div>
@@ -3522,13 +3596,17 @@ export default function App() {
               <span className={`text-xs font-bold ${themeTextMuted} flex items-center gap-1.5`}>
                 <Droplets className="w-4 h-4 text-[#00f2fe]" /> Reservoir Liquid Level
               </span>
-              <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300'}`}>
-                Optimal
+              <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${
+                !hasLiveTelemetry
+                  ? (isDark ? 'bg-slate-500/10 text-slate-400 border border-slate-600/40' : 'bg-slate-100 text-slate-500 border border-slate-300')
+                  : (isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
+              }`}>
+                {hasLiveTelemetry ? 'Optimal' : 'No Data'}
               </span>
             </div>
             <div className="flex items-baseline gap-2 mb-2">
               <span className={`font-mono text-4xl font-extrabold ${themeTextMain} tracking-tight`}>
-                {latestReading ? latestReading.water_level.toFixed(1) : '85.0'}
+                {liveLevel.toFixed(1)}
               </span>
               <span className={`text-sm font-semibold ${themeTextMuted}`}>%</span>
             </div>
@@ -3541,7 +3619,7 @@ export default function App() {
           {/* Humidity Card */}
           <div
             className={`${themeCardBg} rounded-2xl p-5 shadow-lg transition-all relative overflow-hidden ${
-              (latestReading?.humidity || 65) < 50 || (latestReading?.humidity || 65) > 70
+              hasLiveTelemetry && (liveHumidity < 50 || liveHumidity > 70)
                 ? (isDark ? 'border-[#ffa502] shadow-[0_0_15px_rgba(255,165,2,0.15)]' : 'border-amber-400 ring-2 ring-amber-200 bg-amber-50/20')
                 : (isDark ? 'hover:border-[#285788]' : 'hover:border-slate-300')
             }`}
@@ -3552,23 +3630,25 @@ export default function App() {
               </span>
               <span
                 className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${
-                  (latestReading?.humidity || 65) < 50
-                    ? (isDark ? 'bg-[#ffa502]/20 text-[#ffa502] border border-[#ffa502]/40' : 'bg-amber-100 text-amber-800 border border-amber-300')
-                    : (latestReading?.humidity || 65) > 70
+                  !hasLiveTelemetry
+                    ? (isDark ? 'bg-slate-500/10 text-slate-400 border border-slate-600/40' : 'bg-slate-100 text-slate-500 border border-slate-300')
+                    : liveHumidity < 50 || liveHumidity > 70
                     ? (isDark ? 'bg-[#ffa502]/20 text-[#ffa502] border border-[#ffa502]/40' : 'bg-amber-100 text-amber-800 border border-amber-300')
                     : (isDark ? 'bg-[#00e676]/15 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800 border border-emerald-300')
                 }`}
               >
-                {(latestReading?.humidity || 65) < 50
+                {!hasLiveTelemetry
+                  ? 'No Data'
+                  : liveHumidity < 50
                   ? 'Dry Air'
-                  : (latestReading?.humidity || 65) > 70
+                  : liveHumidity > 70
                   ? 'High Humidity'
                   : 'Optimal'}
               </span>
             </div>
             <div className="flex items-baseline gap-2 mb-2">
               <span className={`font-mono text-4xl font-extrabold ${themeTextMain} tracking-tight`}>
-                {latestReading ? latestReading.humidity.toFixed(1) : '64.5'}
+                {liveHumidity.toFixed(1)}
               </span>
               <span className={`text-sm font-semibold ${themeTextMuted}`}>% RH</span>
             </div>
@@ -3984,7 +4064,11 @@ export default function App() {
               </h3>
               <button
                 type="button"
-                onClick={() => setShowSimulator(false)}
+                onClick={() => {
+                  setShowSimulator(false);
+                  setSimError('');
+                  setSimSuccess('');
+                }}
                 className={`${isDark ? 'text-gray-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'} text-xl font-bold cursor-pointer`}
               >
                 &times;
@@ -4140,10 +4224,27 @@ export default function App() {
               </div>
             </div>
 
+            {simError && (
+              <div className="mb-4 p-2.5 rounded-lg text-xs border bg-rose-500/10 border-rose-500/40 text-rose-400 flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0" />
+                <span>{simError}</span>
+              </div>
+            )}
+            {simSuccess && (
+              <div className="mb-4 p-2.5 rounded-lg text-xs border bg-emerald-500/10 border-emerald-500/40 text-emerald-400 flex items-start gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{simSuccess}</span>
+              </div>
+            )}
+
             <div className={`flex justify-end gap-3 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
               <button
                 type="button"
-                onClick={() => setShowSimulator(false)}
+                onClick={() => {
+                  setShowSimulator(false);
+                  setSimError('');
+                  setSimSuccess('');
+                }}
                 className={`px-4 py-2 text-xs font-semibold rounded-lg ${
                   isDark ? 'bg-[#0d223a] text-gray-300 hover:text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
                 } cursor-pointer transition`}
@@ -4153,9 +4254,11 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleSimulateSubmit}
-                className="px-4 py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-[#00f2fe] to-[#4facfe] text-[#030a16] shadow-md hover:opacity-95 cursor-pointer transition"
+                disabled={simLoading}
+                className="px-4 py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-[#00f2fe] to-[#4facfe] text-[#030a16] shadow-md hover:opacity-95 cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
               >
-                Apply Diagnostic Calibration
+                {simLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+                {simLoading ? 'Applying…' : 'Apply Diagnostic Calibration'}
               </button>
             </div>
           </div>

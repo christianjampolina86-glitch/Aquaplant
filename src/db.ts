@@ -394,27 +394,8 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
       ON DUPLICATE KEY UPDATE username = username;
     `);
 
-    // Seed initial readings if sensor_readings table is currently empty
-    const [cntRows] = await p.query<mysql.RowDataPacket[]>('SELECT COUNT(*) as cnt FROM sensor_readings');
-    if (cntRows[0]?.cnt === 0) {
-      const now = Date.now();
-      const initialReadings: string[] = [];
-      for (let i = 24; i >= 0; i--) {
-        const time = new Date(now - i * 3600000).toISOString().slice(0, 19).replace('T', ' ');
-        const tds = (735 + Math.sin(i / 3) * 45 + (Math.random() * 8)).toFixed(1);
-        const ph = (6.08 + Math.cos(i / 4) * 0.18 + (Math.random() * 0.04)).toFixed(2);
-        const temp = (24.2 + Math.sin(i / 5) * 1.2).toFixed(1);
-        const level = (86.5 - i * 0.35).toFixed(1);
-        const hum = (64.5 + Math.cos(i / 2) * 4).toFixed(1);
-        initialReadings.push(`(${tds}, ${ph}, ${temp}, ${level}, ${hum}, 'ESP32', '${time}')`);
-      }
-      if (initialReadings.length > 0) {
-        await p.query(`
-          INSERT INTO sensor_readings (tds, ph, temperature, water_level, humidity, device_ip, recorded_at)
-          VALUES ${initialReadings.join(', ')}
-        `);
-      }
-    }
+    // No demo readings are seeded: telemetry stays at zero until the ESP32
+    // (or the diagnostics page) sends the first real packet.
 
     console.log('[AQUAPLANT DB] Cloud database schema verified and auto-migrated successfully.');
   } catch (err: any) {
