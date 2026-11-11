@@ -146,6 +146,78 @@ export interface CloudDbStatus {
   connection_source: 'DATABASE_URL' | 'DB_HOST_CONFIG' | 'IN_MEMORY_FALLBACK';
 }
 
+// ============================================================================
+// OFFLINE MODE STORAGE
+// While the station has no internet, telemetry readings and audit events are
+// queued in localStorage. When the operator signs back in, they are uploaded
+// to the MySQL/TiDB database in one batch.
+// ============================================================================
+const OFFLINE_READINGS_KEY = 'aquaplant_offline_readings';
+const OFFLINE_LOGS_KEY = 'aquaplant_offline_logs';
+const OFFLINE_READINGS_LIMIT = 720; // ~2 hours at one sample every 10s
+const OFFLINE_LOGS_LIMIT = 500;
+
+function readOfflineQueue<T>(key: string): T[] {
+  try {
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeOfflineQueue<T>(key: string, items: T[]) {
+  try {
+    localStorage.setItem(key, JSON.stringify(items));
+  } catch {}
+}
+
+function getOfflineQueueCounts() {
+  const readings = readOfflineQueue<SensorReading>(OFFLINE_READINGS_KEY).length;
+  const logs = readOfflineQueue<SystemLog>(OFFLINE_LOGS_KEY).length;
+  return { readings, logs, total: readings + logs };
+}
+
+// Keep one sample every 10 seconds so the queue stays small but useful.
+function queueOfflineReading(reading: SensorReading) {
+  const queue = readOfflineQueue<SensorReading>(OFFLINE_READINGS_KEY);
+  const last = queue[queue.length - 1];
+  if (last && Date.now() - new Date(last.recorded_at).getTime() < 10000) return;
+  queue.push({
+    id: 0,
+    tds: Number(reading.tds),
+    ph: Number(reading.ph),
+    temperature: Number(reading.temperature),
+    water_level: Number(reading.water_level),
+    humidity: Number(reading.humidity ?? 65),
+    recorded_at: reading.recorded_at || new Date().toISOString(),
+    device_ip: reading.device_ip
+  });
+  while (queue.length > OFFLINE_READINGS_LIMIT) queue.shift();
+  writeOfflineQueue(OFFLINE_READINGS_KEY, queue);
+}
+
+function queueOfflineLog(log: SystemLog) {
+  const queue = readOfflineQueue<SystemLog>(OFFLINE_LOGS_KEY);
+  queue.push({
+    id: 0,
+    message: log.message,
+    level: log.level,
+    source: log.source,
+    created_at: log.created_at || new Date().toISOString()
+  });
+  while (queue.length > OFFLINE_LOGS_LIMIT) queue.shift();
+  writeOfflineQueue(OFFLINE_LOGS_KEY, queue);
+}
+
+function clearOfflineQueues() {
+  try {
+    localStorage.removeItem(OFFLINE_READINGS_KEY);
+    localStorage.removeItem(OFFLINE_LOGS_KEY);
+  } catch {}
+}
+
 export default function App() {
   // Authentication & Session state (defaults to authorized operator in preview)
   const [token, setToken] = useState<string | null>(() => localStorage.getItem('aquaplant_auth_token'));
@@ -169,6 +241,16 @@ export default function App() {
     humidity: 64.5,
     recorded_at: new Date().toISOString()
   });
+
+  // Offline mode: records captured while the station has no internet
+  const latestReadingRef = useRef<SensorReading | null>(null);
+  const [offlineQueuedCount, setOfflineQueuedCount] = useState<number>(() => getOfflineQueueCounts().total);
+  const [offlineSyncing, setOfflineSyncing] = useState(false);
+  const [offlineSyncNotice, setOfflineSyncNotice] = useState('');
+
+  useEffect(() => {
+    latestReadingRef.current = latestReading;
+  }, [latestReading]);
 
   const [esp32Status, setEsp32Status] = useState<{ is_online: boolean; last_seen_ago: string }>({
     is_online: true,
@@ -524,6 +606,8 @@ export default function App() {
             setUser(data.user);
             localStorage.setItem('aquaplant_auth_token', data.token);
             localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
+            // Upload anything queued from an offline session, if present.
+            syncOfflineRecords(data.token);
           }
         })
         .catch(() => {});
@@ -589,32 +673,79 @@ export default function App() {
       message: `Offline mode initialized for ${operator} at ${station}. Local closed-loop controls, manual pump relays, and USB Serial interface armed.`,
       created_at: new Date().toISOString()
     };
+    queueOfflineLog(offlineLog);
     setLogs((prev) => [offlineLog, ...prev]);
+    setOfflineQueuedCount(getOfflineQueueCounts().total);
   };
 
-  // Switch back to Online Cloud Server Mode
-  const handleSwitchToOnlineMode = async () => {
-    setIsOfflineMode(false);
-    localStorage.removeItem('aquaplant_offline_mode');
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password: 'admin123' })
-      });
-      const data = await res.json();
-      if (data.token) {
-        setToken(data.token);
-        setUser(data.user);
-        localStorage.setItem('aquaplant_auth_token', data.token);
-        localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
-        localStorage.setItem('aquaplant_mode_chosen', 'true');
-        setIsFirstVisit(false);
-      }
-    } catch {
-      // offline fallback
+  // Upload every reading and log captured while the station was offline.
+  // Runs automatically right after a successful cloud sign-in.
+  const syncOfflineRecords = async (authToken: string) => {
+    const readings = readOfflineQueue<SensorReading>(OFFLINE_READINGS_KEY);
+    const logs = readOfflineQueue<SystemLog>(OFFLINE_LOGS_KEY);
+    if (!readings.length && !logs.length) {
+      setOfflineQueuedCount(0);
+      return;
     }
-    fetchAllData();
+    setOfflineSyncing(true);
+    setOfflineSyncNotice('');
+    try {
+      const res = await fetch('/api/sync/offline', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`
+        },
+        body: JSON.stringify({ readings, logs })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setOfflineSyncNotice(
+          `Could not upload the offline records: ${data.error || 'the server rejected the batch'}. They are still stored on this device and will retry at the next sign-in.`
+        );
+        return;
+      }
+      clearOfflineQueues();
+      setOfflineQueuedCount(0);
+      setOfflineSyncNotice(
+        `Offline data uploaded to the database: ${data.readings ?? readings.length} sensor reading(s) and ${data.logs ?? logs.length} system log(s) saved.`
+      );
+      setTimeout(() => setOfflineSyncNotice(''), 25000);
+    } catch {
+      setOfflineSyncNotice(
+        'Could not reach the server to upload the offline data. It is still stored on this device and will retry at the next sign-in.'
+      );
+    } finally {
+      setOfflineSyncing(false);
+    }
+  };
+
+  // Leave offline mode: the operator must sign in again, and the data
+  // collected while offline is uploaded straight to the database.
+  const handleSwitchToOnlineMode = () => {
+    const { readings, logs } = getOfflineQueueCounts();
+    const queued = readings + logs;
+
+    setIsOfflineMode(false);
+    setToken(null);
+    setUser(null);
+    setGuestReadOnly(false);
+    localStorage.removeItem('aquaplant_offline_mode');
+    localStorage.removeItem('aquaplant_auth_token');
+    localStorage.removeItem('aquaplant_auth_user');
+    // Blocks the automatic demo sign-in so the login form really appears.
+    localStorage.setItem('aquaplant_explicit_logout', 'true');
+    setHasExplicitlyLoggedOut(true);
+    setShowLoginModal(false);
+    setAuthScreen('login');
+    setLoginError('');
+    setLoginUsername('');
+    setLoginPassword('');
+    setAuthNotice(
+      queued > 0
+        ? `Sign in to go back online. ${queued} record(s) collected offline (${readings} sensor readings, ${logs} logs) will be uploaded to the database automatically.`
+        : 'Sign in to go back online and reconnect to the cloud database.'
+    );
   };
 
   // Save Wi-Fi credentials and immediately launch into selected dashboard mode
@@ -663,6 +794,8 @@ export default function App() {
       setShowLoginModal(false);
       setLoginLoading(false);
       fetchAllData();
+      // Send the offline batch to the database right after signing in.
+      syncOfflineRecords(data.token);
     } catch (err: any) {
       setLoginError('Network error connecting to backend auth service.');
       setLoginLoading(false);
@@ -694,6 +827,7 @@ export default function App() {
         setGuestReadOnly(false);
         setShowLoginModal(false);
         fetchAllData();
+        syncOfflineRecords(data.token);
       } else {
         setLoginError(data.error || 'Demo login failed');
       }
@@ -772,6 +906,7 @@ export default function App() {
       setRegConfirm('');
       setAuthScreen('login');
       fetchAllData();
+      syncOfflineRecords(data.token);
     } catch (err: any) {
       setLoginError('Network error connecting to registration service.');
       setRegLoading(false);
@@ -891,13 +1026,13 @@ export default function App() {
   const fetchAllData = async () => {
     if (isOfflineMode) {
       // Standalone field mode: keep local telemetry active with gentle sensor fluctuations
-      setLatestReading((prev) => {
-        if (!prev) return prev;
+      const prev = latestReadingRef.current;
+      if (prev) {
         const driftTds = (Math.random() - 0.5) * 3;
         const driftPh = (Math.random() - 0.5) * 0.03;
         const driftTemp = (Math.random() - 0.5) * 0.1;
         const driftLevel = (Math.random() - 0.5) * 0.1;
-        return {
+        const next: SensorReading = {
           ...prev,
           tds: Math.max(650, Math.min(880, +(prev.tds + driftTds).toFixed(1))),
           ph: Math.max(5.85, Math.min(6.45, +(prev.ph + driftPh).toFixed(2))),
@@ -905,7 +1040,12 @@ export default function App() {
           water_level: Math.max(70, Math.min(95, +(prev.water_level + driftLevel).toFixed(1))),
           recorded_at: new Date().toISOString()
         };
-      });
+        latestReadingRef.current = next;
+        // Save the sample locally so it can be uploaded after signing back in.
+        queueOfflineReading(next);
+        setOfflineQueuedCount(getOfflineQueueCounts().total);
+        setLatestReading(next);
+      }
       return;
     }
 
@@ -1633,7 +1773,9 @@ export default function App() {
         message: `Offline manual toggle: ${device.toUpperCase()} set to ${newState === 1 ? 'ON / ACTIVE' : 'OFF / IDLE'}`,
         created_at: new Date().toISOString()
       };
+      queueOfflineLog(auditLog);
       setLogs((prev) => [auditLog, ...prev]);
+      setOfflineQueuedCount(getOfflineQueueCounts().total);
       return;
     }
 
@@ -1692,7 +1834,9 @@ export default function App() {
         message: 'Emergency 3-pump reservoir flush cycle initiated by Field Operator in Offline Mode.',
         created_at: new Date().toISOString()
       };
+      queueOfflineLog(auditLog);
       setLogs((prev) => [auditLog, ...prev]);
+      setOfflineQueuedCount(getOfflineQueueCounts().total);
 
       setTimeout(() => {
         setControls((prev) => ({ ...prev, flush_pump: 0 }));
@@ -3007,6 +3151,14 @@ export default function App() {
                 <WifiOff className="w-3.5 h-3.5" />
                 <span className="hidden md:inline">OFFLINE FIELD MODE</span>
                 <span className="md:hidden">OFFLINE</span>
+                {offlineQueuedCount > 0 && (
+                  <span
+                    className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-200 text-[10px]"
+                    title={`${offlineQueuedCount} record(s) stored on this device, waiting to be uploaded`}
+                  >
+                    {offlineQueuedCount} queued
+                  </span>
+                )}
                 <button
                   type="button"
                   onClick={handleSwitchToOnlineMode}
@@ -3135,6 +3287,29 @@ export default function App() {
 
         {/* Main Full-Width Desktop Web Workspace */}
         <main className="max-w-[1560px] w-full mx-auto p-4 sm:p-6 flex-1 flex flex-col gap-6">
+        {/* Offline → Online upload status */}
+        {(offlineSyncing || offlineSyncNotice) && (
+          <div
+            className={`rounded-xl border px-4 py-3 text-xs flex items-start gap-2 shadow-sm ${
+              offlineSyncing
+                ? 'bg-cyan-500/10 border-cyan-500/40 text-cyan-300'
+                : offlineSyncNotice.toLowerCase().includes('uploaded')
+                ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-300'
+                : 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+            }`}
+          >
+            {offlineSyncing ? (
+              <RefreshCw className="w-4 h-4 shrink-0 animate-spin" />
+            ) : offlineSyncNotice.toLowerCase().includes('uploaded') ? (
+              <CheckCircle2 className="w-4 h-4 shrink-0" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 shrink-0" />
+            )}
+            <span className="leading-relaxed">
+              {offlineSyncing ? 'Uploading the data collected during offline mode to the database…' : offlineSyncNotice}
+            </span>
+          </div>
+        )}
         {/* Top Status Banner: System Health, Closed-Loop Mode, Reservoir Gauge */}
         <section id="overview" className="grid grid-cols-1 md:grid-cols-3 gap-5">
           {/* 1. Overall System Status */}

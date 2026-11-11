@@ -691,6 +691,92 @@ app.post('/api/sensors', authenticateDeviceKey, async (req: Request, res: Respon
   }
 });
 
+// 3b. Offline sync: upload the readings and logs captured while the station
+//     had no internet. Sent by the dashboard right after the operator signs in.
+app.post('/api/sync/offline', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const rawReadings = Array.isArray(req.body?.readings) ? req.body.readings : [];
+    const rawLogs = Array.isArray(req.body?.logs) ? req.body.logs : [];
+
+    const readings = rawReadings.slice(0, 1000);
+    const logs = rawLogs.slice(0, 500);
+
+    if (!readings.length && !logs.length) {
+      res.json({ ok: true, readings: 0, logs: 0, message: 'Nothing to sync.' });
+      return;
+    }
+
+    const isValidDate = (value: any) => value && !Number.isNaN(new Date(value).getTime());
+
+    let readingsSaved = 0;
+    let readingsSkipped = 0;
+    for (const item of readings) {
+      const tds = Number(item?.tds);
+      const ph = Number(item?.ph);
+      const temperature = Number(item?.temperature);
+      const waterLevel = Number(item?.water_level);
+
+      if (![tds, ph, temperature, waterLevel].every((n) => Number.isFinite(n))) {
+        readingsSkipped++;
+        continue;
+      }
+
+      const humidity = Number.isFinite(Number(item?.humidity)) ? Number(item.humidity) : 65.0;
+
+      await insertSensorReading(
+        tds,
+        ph,
+        temperature,
+        waterLevel,
+        humidity,
+        'OFFLINE_SYNC',
+        isValidDate(item?.recorded_at) ? item.recorded_at : undefined
+      );
+      readingsSaved++;
+    }
+
+    let logsSaved = 0;
+    let logsSkipped = 0;
+    for (const item of logs) {
+      const message = typeof item?.message === 'string' ? item.message.trim() : '';
+      if (!message) {
+        logsSkipped++;
+        continue;
+      }
+      const allowedLevels = ['INFO', 'WARN', 'ALERT', 'SUCCESS', 'ERROR'];
+      const level = allowedLevels.includes(item?.level) ? item.level : 'INFO';
+      const source = typeof item?.source === 'string' && item.source.trim()
+        ? item.source.trim().slice(0, 64)
+        : 'OFFLINE_SYNC';
+
+      await addSystemLog(
+        message.slice(0, 1000),
+        level,
+        source,
+        isValidDate(item?.created_at) ? item.created_at : undefined
+      );
+      logsSaved++;
+    }
+
+    const operator = req.user?.username || 'Operator';
+    await addSystemLog(
+      `Offline data synchronised by ${operator}: ${readingsSaved} sensor reading(s) and ${logsSaved} log(s) uploaded to the database.`,
+      'SUCCESS',
+      'OFFLINE_SYNC'
+    );
+
+    res.json({
+      ok: true,
+      readings: readingsSaved,
+      logs: logsSaved,
+      skipped: readingsSkipped + logsSkipped
+    });
+  } catch (error: any) {
+    console.error('Error syncing offline data:', error);
+    res.status(500).json({ error: 'Failed to upload the offline data.' });
+  }
+});
+
 // 4. Sensors: Latest Reading & ESP32 Online/Offline status
 app.get('/api/sensors/latest', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {

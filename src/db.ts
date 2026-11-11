@@ -221,13 +221,13 @@ class InMemoryStore {
     }
   }
 
-  addLog(message: string, level: SystemLog['level'], source: string = 'SYSTEM'): SystemLog {
+  addLog(message: string, level: SystemLog['level'], source: string = 'SYSTEM', createdAt?: string): SystemLog {
     const log: SystemLog = {
       id: this.nextId.log++,
       message,
       level,
       source,
-      created_at: new Date().toISOString()
+      created_at: createdAt || new Date().toISOString()
     };
     this.systemLogs.unshift(log);
     // Keep max 1000 logs in memory
@@ -801,14 +801,17 @@ export async function insertSensorReading(
   temperature: number,
   water_level: number,
   humidity: number = 65.0,
-  device_ip?: string
+  device_ip?: string,
+  recordedAt?: string
 ): Promise<SensorReading> {
-  const recorded_at = new Date().toISOString();
+  const recorded_at = recordedAt && !Number.isNaN(new Date(recordedAt).getTime())
+    ? new Date(recordedAt).toISOString()
+    : new Date().toISOString();
 
   if (isMySqlActive && pool) {
     const [result] = await pool.query<mysql.ResultSetHeader>(
       'INSERT INTO sensor_readings (tds, ph, temperature, water_level, humidity, device_ip, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [tds, ph, temperature, water_level, humidity, device_ip || null, new Date()]
+      [tds, ph, temperature, water_level, humidity, device_ip || null, new Date(recorded_at)]
     );
     return {
       id: result.insertId,
@@ -1033,16 +1036,26 @@ export async function getSystemLogs(limit = 50, level?: string): Promise<SystemL
   return logs.slice(0, limit);
 }
 
-export async function addSystemLog(message: string, level: SystemLog['level'], source = 'SYSTEM') {
+export async function addSystemLog(
+  message: string,
+  level: SystemLog['level'],
+  source = 'SYSTEM',
+  createdAt?: string
+) {
+  const created_at = createdAt && !Number.isNaN(new Date(createdAt).getTime())
+    ? new Date(createdAt).toISOString()
+    : new Date().toISOString();
+
   if (isMySqlActive && pool) {
-    await pool.query('INSERT INTO system_logs (message, level, source, created_at) VALUES (?, ?, ?, NOW())', [
+    await pool.query('INSERT INTO system_logs (message, level, source, created_at) VALUES (?, ?, ?, ?)', [
       message,
       level,
-      source
+      source,
+      new Date(created_at)
     ]);
     return;
   }
-  memoryStore.addLog(message, level, source);
+  memoryStore.addLog(message, level, source, created_at);
 }
 
 export async function getAllDataForExport() {
