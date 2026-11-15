@@ -100,11 +100,9 @@ INSERT INTO `sms_settings` (`id`, `phone_number`, `enabled`, `notify_on_flush`, 
 VALUES (1, '+63 917 888 1234', 1, 1, 1, 1, 1, 1, 1, 5, 'SIMULATOR')
 ON DUPLICATE KEY UPDATE `phone_number` = `phone_number`;
 
--- Seed Default Admin Operator (admin / admin123)
--- Password hash generated with bcrypt 10 salt rounds
-INSERT INTO `users` (`username`, `email`, `password_hash`, `role`) VALUES
-  ('admin', 'admin@aquaplant.local', '$2a$10$wEeVg7hWbO7g49f8j0yvye0hFh/rO0Q0GkJyQ8cWk8z1R3C.5Lq0m', 'admin')
-ON DUPLICATE KEY UPDATE `username` = `username`;
+-- No default administrator is seeded here.
+-- Create the first administrator in the Administrator Portal (/admin.html)
+-- using the admin access code (ADMIN_SIGNUP_CODE).
 
 -- Seed Initial System Logs
 INSERT INTO `system_logs` (`message`, `level`, `source`) VALUES

@@ -302,7 +302,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
         ph DECIMAL(4, 2) NOT NULL,
         temperature DECIMAL(5, 2) NOT NULL,
         water_level DECIMAL(5, 2) NOT NULL,
-        humidity DECIMAL(5, 2) DEFAULT 65.00,
+        humidity DECIMAL(5, 2) DEFAULT 0.00,
         device_ip VARCHAR(64) DEFAULT NULL,
         recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX idx_recorded_at (recorded_at)
@@ -387,12 +387,9 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
       ON DUPLICATE KEY UPDATE phone_number = phone_number;
     `);
 
-    // Seed default admin operator account (admin / admin123)
-    await p.query(`
-      INSERT INTO users (username, email, password_hash, role)
-      VALUES ('admin', 'admin@aquaplant.local', '$2a$10$wEeVg7hWbO7g49f8j0yvye0hFh/rO0Q0GkJyQ8cWk8z1R3C.5Lq0m', 'admin')
-      ON DUPLICATE KEY UPDATE username = username;
-    `);
+    // No default administrator is seeded. Create the first administrator from
+    // the Administrator Portal using the admin access code (ADMIN_SIGNUP_CODE).
+    // This avoids shipping a well-known default password with the app.
 
     // No demo readings are seeded: telemetry stays at zero until the ESP32
     // (or the diagnostics page) sends the first real packet.
@@ -781,7 +778,7 @@ export async function insertSensorReading(
   ph: number,
   temperature: number,
   water_level: number,
-  humidity: number = 65.0,
+  humidity: number = 0,
   device_ip?: string,
   recordedAt?: string
 ): Promise<SensorReading> {
@@ -823,6 +820,64 @@ export async function insertSensorReading(
   return reading;
 }
 
+// Bulk insert used by offline sync. One round trip per 100 rows instead of
+// one per row, so a large offline batch finishes well inside the request timeout.
+export async function insertSensorReadingsBatch(
+  readings: Array<{
+    tds: number;
+    ph: number;
+    temperature: number;
+    water_level: number;
+    humidity: number;
+    device_ip?: string;
+    recorded_at: string;
+  }>
+): Promise<number> {
+  if (!readings.length) return 0;
+
+  if (isMySqlActive && pool) {
+    let saved = 0;
+    const chunkSize = 100;
+    for (let i = 0; i < readings.length; i += chunkSize) {
+      const chunk = readings.slice(i, i + chunkSize);
+      const values: any[] = [];
+      const placeholders = chunk.map((r) => {
+        values.push(
+          r.tds,
+          r.ph,
+          r.temperature,
+          r.water_level,
+          r.humidity,
+          r.device_ip || null,
+          new Date(r.recorded_at)
+        );
+        return '(?, ?, ?, ?, ?, ?, ?)';
+      });
+      const [result] = await pool.query<mysql.ResultSetHeader>(
+        `INSERT INTO sensor_readings (tds, ph, temperature, water_level, humidity, device_ip, recorded_at) VALUES ${placeholders.join(', ')}`,
+        values
+      );
+      saved += Number(result.affectedRows ?? chunk.length);
+    }
+    return saved;
+  }
+
+  for (const r of readings) {
+    memoryStore.sensorReadings.push({
+      id: memoryStore.nextId.sensor++,
+      tds: r.tds,
+      ph: r.ph,
+      temperature: r.temperature,
+      water_level: r.water_level,
+      humidity: r.humidity,
+      device_ip: r.device_ip,
+      recorded_at: r.recorded_at
+    });
+  }
+  while (memoryStore.sensorReadings.length > 5000) memoryStore.sensorReadings.shift();
+  return readings.length;
+}
+
 export async function getLatestSensorReading(): Promise<SensorReading | null> {
   if (isMySqlActive && pool) {
     const [rows] = await pool.query<mysql.RowDataPacket[]>(
@@ -836,7 +891,7 @@ export async function getLatestSensorReading(): Promise<SensorReading | null> {
       ph: Number(r.ph),
       temperature: Number(r.temperature),
       water_level: Number(r.water_level),
-      humidity: r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 65.0,
+      humidity: r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 0,
       device_ip: r.device_ip,
       recorded_at: new Date(r.recorded_at).toISOString()
     };
@@ -860,7 +915,7 @@ export async function getSensorHistory(hours = 24): Promise<SensorReading[]> {
       ph: Number(r.ph),
       temperature: Number(r.temperature),
       water_level: Number(r.water_level),
-      humidity: r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 65.0,
+      humidity: r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 0,
       device_ip: r.device_ip,
       recorded_at: new Date(r.recorded_at).toISOString()
     }));
@@ -1039,6 +1094,45 @@ export async function addSystemLog(
   memoryStore.addLog(message, level, source, created_at);
 }
 
+// Bulk insert used by offline sync (same batching idea as insertSensorReadingsBatch).
+export async function addSystemLogsBatch(
+  logs: Array<{ message: string; level: SystemLog['level']; source?: string; created_at?: string }>
+): Promise<number> {
+  if (!logs.length) return 0;
+
+  if (isMySqlActive && pool) {
+    let saved = 0;
+    const chunkSize = 100;
+    for (let i = 0; i < logs.length; i += chunkSize) {
+      const chunk = logs.slice(i, i + chunkSize);
+      const values: any[] = [];
+      const placeholders = chunk.map((log) => {
+        const createdAt =
+          log.created_at && !Number.isNaN(new Date(log.created_at).getTime())
+            ? new Date(log.created_at)
+            : new Date();
+        values.push(log.message, log.level, log.source || 'OFFLINE_SYNC', createdAt);
+        return '(?, ?, ?, ?)';
+      });
+      const [result] = await pool.query<mysql.ResultSetHeader>(
+        `INSERT INTO system_logs (message, level, source, created_at) VALUES ${placeholders.join(', ')}`,
+        values
+      );
+      saved += Number(result.affectedRows ?? chunk.length);
+    }
+    return saved;
+  }
+
+  for (const log of logs) {
+    const createdAt =
+      log.created_at && !Number.isNaN(new Date(log.created_at).getTime())
+        ? new Date(log.created_at).toISOString()
+        : new Date().toISOString();
+    memoryStore.addLog(log.message, log.level, log.source || 'OFFLINE_SYNC', createdAt);
+  }
+  return logs.length;
+}
+
 export async function getAllDataForExport() {
   let readings: SensorReading[] = [];
   let logs: SystemLog[] = [];
@@ -1054,7 +1148,7 @@ export async function getAllDataForExport() {
       ph: Number(r.ph),
       temperature: Number(r.temperature),
       water_level: Number(r.water_level),
-      humidity: r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 65.0,
+      humidity: r.humidity !== undefined && r.humidity !== null ? Number(r.humidity) : 0,
       device_ip: r.device_ip,
       recorded_at: new Date(r.recorded_at).toISOString()
     }));

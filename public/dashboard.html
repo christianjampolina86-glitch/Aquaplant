@@ -95,10 +95,10 @@
         <div class="level-meter-wrapper">
           <div class="level-meter-header">
             <span style="color: var(--text-muted);">Current Depth</span>
-            <span class="level-meter-pct" id="topLevelPct">85.0%</span>
+            <span class="level-meter-pct" id="topLevelPct">0.0%</span>
           </div>
           <div class="level-track">
-            <div class="level-fill" id="topLevelFill" style="width: 85%;"></div>
+            <div class="level-fill" id="topLevelFill" style="width: 0%;"></div>
           </div>
           <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); margin-top: 6px;">
             <span>0% (Empty)</span>
@@ -117,10 +117,10 @@
           <div class="sensor-title">
             <span>⚡ Total Dissolved Solids</span>
           </div>
-          <span class="sensor-badge badge-optimal" id="badgeTds">Optimal</span>
+          <span class="sensor-badge" id="badgeTds">No Data</span>
         </div>
         <div class="sensor-value-group">
-          <div class="sensor-val" id="valTds">745.0</div>
+          <div class="sensor-val" id="valTds">0.0</div>
           <div class="sensor-unit">ppm</div>
         </div>
         <div class="sensor-target-note">
@@ -135,10 +135,10 @@
           <div class="sensor-title">
             <span>🧪 Nutrient Acidity / pH</span>
           </div>
-          <span class="sensor-badge badge-optimal" id="badgePh">Optimal</span>
+          <span class="sensor-badge" id="badgePh">No Data</span>
         </div>
         <div class="sensor-value-group">
-          <div class="sensor-val" id="valPh">6.08</div>
+          <div class="sensor-val" id="valPh">0.00</div>
           <div class="sensor-unit">pH</div>
         </div>
         <div class="sensor-target-note">
@@ -153,10 +153,10 @@
           <div class="sensor-title">
             <span>🌡️ Water Temperature</span>
           </div>
-          <span class="sensor-badge badge-optimal" id="badgeTemp">Optimal</span>
+          <span class="sensor-badge" id="badgeTemp">No Data</span>
         </div>
         <div class="sensor-value-group">
-          <div class="sensor-val" id="valTemp">24.2</div>
+          <div class="sensor-val" id="valTemp">0.0</div>
           <div class="sensor-unit">°C</div>
         </div>
         <div class="sensor-target-note">
@@ -171,10 +171,10 @@
           <div class="sensor-title">
             <span>🌊 Reservoir Liquid Level</span>
           </div>
-          <span class="sensor-badge badge-optimal" id="badgeLevel">Optimal</span>
+          <span class="sensor-badge" id="badgeLevel">No Data</span>
         </div>
         <div class="sensor-value-group">
-          <div class="sensor-val" id="valLevel">85.0</div>
+          <div class="sensor-val" id="valLevel">0.0</div>
           <div class="sensor-unit">%</div>
         </div>
         <div class="sensor-target-note">
@@ -189,10 +189,10 @@
           <div class="sensor-title">
             <span>💨 Ambient Canopy Humidity</span>
           </div>
-          <span class="sensor-badge badge-optimal" id="badgeHumidity">Optimal</span>
+          <span class="sensor-badge" id="badgeHumidity">No Data</span>
         </div>
         <div class="sensor-value-group">
-          <div class="sensor-val" id="valHumidity">64.5</div>
+          <div class="sensor-val" id="valHumidity">0.0</div>
           <div class="sensor-unit">% RH</div>
         </div>
         <div class="sensor-target-note">
@@ -676,7 +676,7 @@
       ctx.beginPath();
       historyData.forEach((d, idx) => {
         const x = getX(idx);
-        const y = getY_HUMIDITY(d.humidity || 65);
+        const y = getY_HUMIDITY(d.humidity ?? 0);
         if (idx === 0) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
       });
@@ -708,7 +708,7 @@
             { y: getY_TDS(nearestData.tds), color: '#00f2fe' },
             { y: getY_PH(nearestData.ph), color: '#e056fd' },
             { y: getY_TEMP(nearestData.temperature), color: '#f0932b' },
-            { y: getY_HUMIDITY(nearestData.humidity || 65), color: '#00e676' }
+            { y: getY_HUMIDITY(nearestData.humidity ?? 0), color: '#00e676' }
           ];
 
           points.forEach(p => {
@@ -753,7 +753,7 @@
           ctx.fillText(`Temp:  ${nearestData.temperature.toFixed(1)} °C`, tipX + 10, tipY + 74);
 
           ctx.fillStyle = '#00e676';
-          ctx.fillText(`Humid: ${(nearestData.humidity || 65).toFixed(1)} % RH`, tx + 10, tipY + 92);
+          ctx.fillText(`Humid: ${(nearestData.humidity ?? 0).toFixed(1)} % RH`, tx + 10, tipY + 92);
         }
       }
     }

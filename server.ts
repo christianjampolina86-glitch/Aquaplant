@@ -37,12 +37,14 @@ import {
   touchUserLastSeen,
   getUserStatusById,
   insertSensorReading,
+  insertSensorReadingsBatch,
   getLatestSensorReading,
   getSensorHistory,
   getControlStates,
   updateControlStateWithLog,
   getSystemLogs,
   addSystemLog,
+  addSystemLogsBatch,
   setTriggerFlushForNextPoll,
   getTriggerFlushForNextPoll,
   getAllDataForExport,
@@ -55,7 +57,8 @@ import {
   getDbConnectionStatus,
   connectToDatabase,
   SmsLog,
-  SmsAlertSetting
+  SmsAlertSetting,
+  SystemLog
 } from './src/db.ts';
 
 dotenv.config();
@@ -74,6 +77,35 @@ const ALLOW_REGISTRATION = process.env.ALLOW_REGISTRATION !== 'false';
 // Change this in Render -> Environment (ADMIN_SIGNUP_CODE) to your own secret.
 const ADMIN_SIGNUP_CODE = process.env.ADMIN_SIGNUP_CODE || 'AQUAPLANT-ADMIN-2026';
 
+// Very small brute-force guard for the public sign-in endpoint.
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 15;
+const loginFailures = new Map<string, { count: number; firstAt: number }>();
+
+function loginClientKey(req: Request): string {
+  const forwarded = req.headers['x-forwarded-for']?.toString().split(',')[0].trim();
+  return forwarded || req.socket.remoteAddress || 'unknown';
+}
+
+function isLoginThrottled(key: string): boolean {
+  const entry = loginFailures.get(key);
+  if (!entry) return false;
+  if (Date.now() - entry.firstAt > LOGIN_FAILURE_WINDOW_MS) {
+    loginFailures.delete(key);
+    return false;
+  }
+  return entry.count >= LOGIN_FAILURE_LIMIT;
+}
+
+function recordLoginFailure(key: string) {
+  const entry = loginFailures.get(key);
+  if (!entry || Date.now() - entry.firstAt > LOGIN_FAILURE_WINDOW_MS) {
+    loginFailures.set(key, { count: 1, firstAt: Date.now() });
+  } else {
+    entry.count += 1;
+  }
+}
+
 // Enable JSON body parsing and URL-encoded form parsing
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -88,10 +120,15 @@ let dbStatus = { isMySQL: false, message: 'Initializing...' };
     dbStatus = await initDatabase();
 
     const userCount = await countUsers();
-    if (userCount === 0) {
-      const defaultHash = await bcrypt.hash('admin123', 10);
+    const bootstrapPassword = process.env.DEFAULT_ADMIN_PASSWORD;
+
+    if (userCount === 0 && bootstrapPassword) {
+      const defaultHash = await bcrypt.hash(bootstrapPassword, 10);
       await createUser('admin', 'admin@aquaplant.local', defaultHash, 'admin');
-      console.log('[AQUAPLANT] Default admin account created: username: "admin", password: "admin123"');
+      console.log('[AQUAPLANT] Bootstrap administrator account created from DEFAULT_ADMIN_PASSWORD.');
+      console.log('[AQUAPLANT] Change that password after signing in, then remove the variable.');
+    } else if (userCount === 0) {
+      console.log('[AQUAPLANT] No accounts yet. Create the first administrator in the Administrator Portal with the admin access code.');
     } else {
       console.log('[AQUAPLANT] Admin account already present — seed skipped.');
     }
@@ -313,17 +350,27 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
       return;
     }
 
+    const clientKey = loginClientKey(req);
+    if (isLoginThrottled(clientKey)) {
+      res.status(429).json({ error: 'Too many failed sign-in attempts. Please wait 15 minutes and try again.' });
+      return;
+    }
+
     const user = await findUserByUsername(username);
     if (!user) {
+      recordLoginFailure(clientKey);
       res.status(401).json({ error: 'Invalid username or password.' });
       return;
     }
 
     const passwordMatch = await bcrypt.compare(password, user.password_hash);
     if (!passwordMatch) {
+      recordLoginFailure(clientKey);
       res.status(401).json({ error: 'Invalid username or password.' });
       return;
     }
+
+    loginFailures.delete(clientKey);
 
     const accountStatus = user.status || 'approved';
     if (accountStatus === 'pending') {
@@ -656,7 +703,7 @@ app.post('/api/sensors', authenticateDeviceKey, async (req: Request, res: Respon
       Number(ph),
       Number(temperature),
       Number(water_level),
-      humidity !== undefined ? Number(humidity) : 65.0,
+      humidity !== undefined ? Number(humidity) : 0,
       clientIp
     );
 
@@ -708,8 +755,17 @@ app.post('/api/sync/offline', authenticateToken, async (req: AuthenticatedReques
 
     const isValidDate = (value: any) => value && !Number.isNaN(new Date(value).getTime());
 
-    let readingsSaved = 0;
+    const validReadings: Array<{
+      tds: number;
+      ph: number;
+      temperature: number;
+      water_level: number;
+      humidity: number;
+      device_ip?: string;
+      recorded_at: string;
+    }> = [];
     let readingsSkipped = 0;
+
     for (const item of readings) {
       const tds = Number(item?.tds);
       const ph = Number(item?.ph);
@@ -721,42 +777,46 @@ app.post('/api/sync/offline', authenticateToken, async (req: AuthenticatedReques
         continue;
       }
 
-      const humidity = Number.isFinite(Number(item?.humidity)) ? Number(item.humidity) : 65.0;
-
-      await insertSensorReading(
+      validReadings.push({
         tds,
         ph,
         temperature,
-        waterLevel,
-        humidity,
-        'OFFLINE_SYNC',
-        isValidDate(item?.recorded_at) ? item.recorded_at : undefined
-      );
-      readingsSaved++;
+        water_level: waterLevel,
+        humidity: Number.isFinite(Number(item?.humidity)) ? Number(item.humidity) : 0,
+        device_ip: 'OFFLINE_SYNC',
+        recorded_at: isValidDate(item?.recorded_at)
+          ? new Date(item.recorded_at).toISOString()
+          : new Date().toISOString()
+      });
     }
 
-    let logsSaved = 0;
+    const validLogs: Array<{ message: string; level: SystemLog['level']; source: string; created_at: string }> = [];
     let logsSkipped = 0;
+    const allowedLevels = ['INFO', 'WARN', 'ALERT', 'SUCCESS', 'ERROR'];
+
     for (const item of logs) {
       const message = typeof item?.message === 'string' ? item.message.trim() : '';
       if (!message) {
         logsSkipped++;
         continue;
       }
-      const allowedLevels = ['INFO', 'WARN', 'ALERT', 'SUCCESS', 'ERROR'];
       const level = allowedLevels.includes(item?.level) ? item.level : 'INFO';
       const source = typeof item?.source === 'string' && item.source.trim()
         ? item.source.trim().slice(0, 64)
         : 'OFFLINE_SYNC';
 
-      await addSystemLog(
-        message.slice(0, 1000),
+      validLogs.push({
+        message: message.slice(0, 1000),
         level,
         source,
-        isValidDate(item?.created_at) ? item.created_at : undefined
-      );
-      logsSaved++;
+        created_at: isValidDate(item?.created_at)
+          ? new Date(item.created_at).toISOString()
+          : new Date().toISOString()
+      });
     }
+
+    const readingsSaved = await insertSensorReadingsBatch(validReadings);
+    const logsSaved = await addSystemLogsBatch(validLogs);
 
     const operator = req.user?.username || 'Operator';
     await addSystemLog(
@@ -797,8 +857,13 @@ app.get('/api/sensors/latest', authenticateToken, async (req: AuthenticatedReque
     const diffSec = Math.floor(diffMs / 1000);
     const diffMin = Math.floor(diffSec / 60);
 
+    // Readings written by the diagnostics tool, the ESP32 link test, or an
+    // offline sync are not proof that the ESP32 itself is connected.
+    const syntheticSources = ['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'OFFLINE_SYNC'];
+    const fromRealDevice = !syntheticSources.includes(reading.device_ip || '');
+
     // Requirement: Show "ESP32 Online" only if a reading arrived in the last 3 minutes (180s)
-    const isOnline = diffSec <= 180;
+    const isOnline = fromRealDevice && diffSec <= 180;
     let lastSeenAgo = '';
 
     if (diffSec < 60) {
@@ -814,8 +879,11 @@ app.get('/api/sensors/latest', authenticateToken, async (req: AuthenticatedReque
       reading,
       esp32_status: {
         is_online: isOnline,
-        last_seen_ago: isOnline ? 'Online now' : `Offline, last seen ${lastSeenAgo}`,
-        diff_seconds: diffSec
+        last_seen_ago: isOnline
+          ? 'Online now'
+          : fromRealDevice
+          ? `Offline, last seen ${lastSeenAgo}`
+          : 'Offline — waiting for an ESP32 packet'
       }
     });
   } catch (error: any) {
@@ -1074,9 +1142,11 @@ app.get('/api/export/excel', authenticateToken, async (req: AuthenticatedRequest
     };
 
     readings.forEach((r) => {
-      const tdsStatus = r.tds < 600 ? 'LOW (Deficiency)' : r.tds > 900 ? 'HIGH (Excess Salts)' : 'OPTIMAL';
-      const phStatus = r.ph < 5.5 ? 'ACIDIC (Lockout)' : r.ph > 6.5 ? 'ALKALINE (Precipitation)' : 'OPTIMAL';
-      const humidityStatus = (r.humidity || 65) < 50 ? 'LOW (Excess Transpiration)' : (r.humidity || 65) > 70 ? 'HIGH (Mold Risk / Low Evap)' : 'OPTIMAL';
+      // A zero reading means no sensor packet, not a real measurement, so it is
+      // reported as NO DATA instead of a false deficiency / acidity alarm.
+      const tdsStatus = !r.tds ? 'NO DATA' : r.tds < 600 ? 'LOW (Deficiency)' : r.tds > 900 ? 'HIGH (Excess Salts)' : 'OPTIMAL';
+      const phStatus = !r.ph ? 'NO DATA' : r.ph < 5.5 ? 'ACIDIC (Lockout)' : r.ph > 6.5 ? 'ALKALINE (Precipitation)' : 'OPTIMAL';
+      const humidityStatus = !r.humidity ? 'NO DATA' : r.humidity < 50 ? 'LOW (Excess Transpiration)' : r.humidity > 70 ? 'HIGH (Mold Risk / Low Evap)' : 'OPTIMAL';
 
       sheetSensors.addRow({
         id: r.id,
@@ -1087,7 +1157,7 @@ app.get('/api/export/excel', authenticateToken, async (req: AuthenticatedRequest
         ph_status: phStatus,
         temperature: r.temperature,
         water_level: r.water_level,
-        humidity: r.humidity || 65.0,
+        humidity: r.humidity,
         humidity_status: humidityStatus,
         device_ip: r.device_ip || 'N/A'
       });
@@ -1173,11 +1243,17 @@ app.post('/api/simulator/reading', authenticateToken, async (req: AuthenticatedR
   try {
     const { tds, ph, temperature, water_level, humidity, simulate_anomaly } = req.body;
 
-    let finalTds = tds !== undefined ? Number(tds) : 750;
-    let finalPh = ph !== undefined ? Number(ph) : 6.1;
-    let finalTemp = temperature !== undefined ? Number(temperature) : 24.2;
-    let finalLevel = water_level !== undefined ? Number(water_level) : 85;
-    let finalHumidity = humidity !== undefined ? Number(humidity) : 64.5;
+    // Every value has to come from the operator: no invented demo numbers.
+    let finalTds = Number(tds);
+    let finalPh = Number(ph);
+    let finalTemp = Number(temperature);
+    let finalLevel = Number(water_level);
+    let finalHumidity = Number(humidity);
+
+    if (![finalTds, finalPh, finalTemp, finalLevel, finalHumidity].every((n) => Number.isFinite(n))) {
+      res.status(400).json({ error: 'tds, ph, temperature, water_level and humidity must all be numbers.' });
+      return;
+    }
 
     if (simulate_anomaly === 'high_tds') {
       finalTds = 1120; // Causes salt build-up alert
@@ -1231,7 +1307,7 @@ app.post('/api/simulator/reading', authenticateToken, async (req: AuthenticatedR
 });
 
 // 13. SMS Settings & Management Endpoints
-app.get('/api/sms/settings', async (req: Request, res: Response) => {
+app.get('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const settings = await getSmsSettings();
     res.json(settings);
@@ -1240,7 +1316,7 @@ app.get('/api/sms/settings', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/sms/settings', async (req: Request, res: Response) => {
+app.post('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const updated = await updateSmsSettings(req.body);
     await addSystemLog(
@@ -1254,7 +1330,7 @@ app.post('/api/sms/settings', async (req: Request, res: Response) => {
   }
 });
 
-app.post('/api/sms/test', async (req: Request, res: Response) => {
+app.post('/api/sms/test', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { phone_number } = req.body;
     if (phone_number) {
@@ -1276,7 +1352,7 @@ app.post('/api/sms/test', async (req: Request, res: Response) => {
 });
 
 // Check Semaphore balance & account status (for user's ₱500 account)
-app.get('/api/sms/semaphore/account', async (req: Request, res: Response) => {
+app.get('/api/sms/semaphore/account', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const settings = await getSmsSettings();
     const apiKey = (req.query.apikey as string) || settings.semaphore_api_key || process.env.SEMAPHORE_API_KEY;
@@ -1306,7 +1382,7 @@ app.get('/api/sms/semaphore/account', async (req: Request, res: Response) => {
   }
 });
 
-app.get('/api/sms/logs', async (req: Request, res: Response) => {
+app.get('/api/sms/logs', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const limit = Number(req.query.limit) || 50;
     const logs = await getSmsLogs(limit);
@@ -1316,7 +1392,7 @@ app.get('/api/sms/logs', async (req: Request, res: Response) => {
   }
 });
 
-app.delete('/api/sms/logs', async (req: Request, res: Response) => {
+app.delete('/api/sms/logs', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     await clearSmsLogs();
     res.json({ success: true, message: 'SMS history cleared' });
@@ -1326,11 +1402,11 @@ app.delete('/api/sms/logs', async (req: Request, res: Response) => {
 });
 
 // 14. Cloud Database Link Status & Dynamic Connection
-app.get('/api/database/status', (req: Request, res: Response) => {
+app.get('/api/database/status', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   res.json(getDbConnectionStatus());
 });
 
-app.post('/api/database/connect', async (req: Request, res: Response) => {
+app.post('/api/database/connect', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { host, port, user, password, database, url, ssl } = req.body;
     const result = await connectToDatabase({
@@ -1415,7 +1491,7 @@ app.get('/api/esp32/config', authenticateToken, (req: AuthenticatedRequest, res:
 });
 
 // ESP32 Wi-Fi Configuration API (Primary router & Backup hotspot failover)
-app.get('/api/esp32/wifi-config', (req: Request, res: Response) => {
+app.get('/api/esp32/wifi-config', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   const host = req.get('host') || `localhost:${PORT}`;
   const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
   res.json({
@@ -1424,7 +1500,7 @@ app.get('/api/esp32/wifi-config', (req: Request, res: Response) => {
   });
 });
 
-app.post('/api/esp32/wifi-config', async (req: Request, res: Response) => {
+app.post('/api/esp32/wifi-config', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { primary_ssid, primary_password, backup_ssid, backup_password, push_ota } = req.body;
     if (primary_ssid !== undefined) currentWifiConfig.primary_ssid = String(primary_ssid).trim();
@@ -1564,10 +1640,13 @@ app.get('/api/download/firmware', (req: Request, res: Response) => {
   const filePath = path.join(__dirname, 'firmware', 'aquaplant_esp32.ino');
   if (fs.existsSync(filePath)) {
     let content = fs.readFileSync(filePath, 'utf8');
-    const ssid = (req.query.ssid as string) || currentWifiConfig.primary_ssid;
-    const pass = (req.query.pass as string) || currentWifiConfig.primary_password;
-    const backupSsid = (req.query.backup_ssid as string) || currentWifiConfig.backup_ssid;
-    const backupPass = (req.query.backup_pass as string) || currentWifiConfig.backup_password;
+    // Only personalise with credentials the caller explicitly sent. Never fall
+    // back to the Wi-Fi password stored on the server: this route is a plain
+    // download link and cannot carry an Authorization header.
+    const ssid = req.query.ssid as string;
+    const pass = req.query.pass as string;
+    const backupSsid = req.query.backup_ssid as string;
+    const backupPass = req.query.backup_pass as string;
 
     if (ssid) {
       content = content.replace(/const char\* WIFI_SSID\s*=\s*".*?";/, `const char* WIFI_SSID     = "${ssid.replace(/"/g, '\\"')}";`);

@@ -190,7 +190,7 @@ function queueOfflineReading(reading: SensorReading) {
     ph: Number(reading.ph),
     temperature: Number(reading.temperature),
     water_level: Number(reading.water_level),
-    humidity: Number(reading.humidity ?? 65),
+    humidity: Number(reading.humidity ?? 0),
     recorded_at: reading.recorded_at || new Date().toISOString(),
     device_ip: reading.device_ip
   });
@@ -260,10 +260,10 @@ export default function App() {
   });
 
   const [controls, setControls] = useState<ControlStates>({
-    water_pump: 1,
+    water_pump: 0,
     solution_pump: 0,
     flush_pump: 0,
-    auto_mode: 1
+    auto_mode: 0
   });
 
   const [timeRange, setTimeRange] = useState<'1h' | '6h' | '12h' | '24h'>('24h');
@@ -301,7 +301,10 @@ export default function App() {
     try {
       const k = keyOverride || smsSettings?.semaphore_api_key;
       const url = k ? `/api/sms/semaphore/account?apikey=${encodeURIComponent(k)}` : '/api/sms/semaphore/account';
-      const res = await fetch(url);
+      const headers: Record<string, string> = {};
+      const curToken = token || localStorage.getItem('aquaplant_auth_token');
+      if (curToken) headers['Authorization'] = `Bearer ${curToken}`;
+      const res = await fetch(url, { headers });
       const data = await res.json();
       if (res.ok && data.success) {
         setSemaphoreBalance(data);
@@ -469,8 +472,8 @@ export default function App() {
     }
   });
   const [guestReadOnly, setGuestReadOnly] = useState(false);
-  const [loginUsername, setLoginUsername] = useState('admin');
-  const [loginPassword, setLoginPassword] = useState('admin123');
+  const [loginUsername, setLoginUsername] = useState('');
+  const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
   const [authNotice, setAuthNotice] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
@@ -497,12 +500,8 @@ export default function App() {
       return true;
     }
   });
-  const [loginAuthTab, setLoginAuthTab] = useState<'offline' | 'wifi' | 'online'>(() => {
+  const [loginAuthTab, setLoginAuthTab] = useState<'offline' | 'online'>(() => {
     if (typeof navigator !== 'undefined' && !navigator.onLine) return 'offline';
-    try {
-      const chosen = localStorage.getItem('aquaplant_mode_chosen');
-      if (!chosen) return 'wifi'; // First time opening: prompt Wi-Fi Setup or Offline choice!
-    } catch {}
     return 'online';
   });
   const [offlineStationName, setOfflineStationName] = useState('Greenhouse Alpha (Station #1)');
@@ -595,30 +594,6 @@ export default function App() {
     };
   }, []);
 
-  // Ensure default demo token if absent so web app is accessible immediately
-  // (Only if user is online, not on first visit, not explicitly logged out, and not in offline/guest mode)
-  useEffect(() => {
-    if (!token && !hasExplicitlyLoggedOut && !isOfflineMode && !guestReadOnly && isBrowserOnline && !isFirstVisit) {
-      fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password: 'admin123' })
-      })
-        .then((res) => res.json())
-        .then((data) => {
-          if (data.token) {
-            setToken(data.token);
-            setUser(data.user);
-            localStorage.setItem('aquaplant_auth_token', data.token);
-            localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
-            // Upload anything queued from an offline session, if present.
-            syncOfflineRecords(data.token);
-          }
-        })
-        .catch(() => {});
-    }
-  }, [token, hasExplicitlyLoggedOut, isOfflineMode, guestReadOnly, isBrowserOnline, isFirstVisit]);
-
   // Log Out Handler (supports local session, offline mode, and Firebase sign out)
   // When pressed, operator session is terminated and user is brought directly to the Login Dashboard
   const handleLogout = async () => {
@@ -694,26 +669,58 @@ export default function App() {
     }
     setOfflineSyncing(true);
     setOfflineSyncNotice('');
+
+    // The server accepts a limited batch per request, so send large queues in
+    // several chunks instead of dropping everything past the limit.
+    const readingChunk = 500;
+    const logChunk = 200;
+    const batches = Math.max(
+      Math.ceil(readings.length / readingChunk) || 1,
+      Math.ceil(logs.length / logChunk) || 1
+    );
+
+    let readingsSaved = 0;
+    let logsSaved = 0;
+
     try {
-      const res = await fetch('/api/sync/offline', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify({ readings, logs })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setOfflineSyncNotice(
-          `Could not upload the offline records: ${data.error || 'the server rejected the batch'}. They are still stored on this device and will retry at the next sign-in.`
-        );
-        return;
+      for (let i = 0; i < batches; i++) {
+        const res = await fetch('/api/sync/offline', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`
+          },
+          body: JSON.stringify({
+            readings: readings.slice(i * readingChunk, (i + 1) * readingChunk),
+            logs: logs.slice(i * logChunk, (i + 1) * logChunk)
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (readingsSaved || logsSaved) {
+            // Keep whatever failed so nothing is silently lost, then report.
+            writeOfflineQueue(
+              OFFLINE_READINGS_KEY,
+              readings.slice(i * readingChunk)
+            );
+            writeOfflineQueue(OFFLINE_LOGS_KEY, logs.slice(i * logChunk));
+            setOfflineQueuedCount(
+              readings.length - i * readingChunk + (logs.length - i * logChunk)
+            );
+          }
+          setOfflineSyncNotice(
+            `Could not upload all offline records: ${data.error || 'the server rejected the batch'}. Unsent records are still stored on this device and will retry at the next sign-in.`
+          );
+          return;
+        }
+        readingsSaved += Number(data.readings) || 0;
+        logsSaved += Number(data.logs) || 0;
       }
+
       clearOfflineQueues();
       setOfflineQueuedCount(0);
       setOfflineSyncNotice(
-        `Offline data uploaded to the database: ${data.readings ?? readings.length} sensor reading(s) and ${data.logs ?? logs.length} system log(s) saved.`
+        `Offline data uploaded to the database: ${readingsSaved} sensor reading(s) and ${logsSaved} system log(s) saved.`
       );
       setTimeout(() => setOfflineSyncNotice(''), 25000);
     } catch {
@@ -761,7 +768,8 @@ export default function App() {
     if (targetMode === 'offline') {
       handleEnterOfflineMode(offlineStationName, offlineOperatorName);
     } else {
-      handleQuickDemoLogin();
+      setHasExplicitlyLoggedOut(true);
+      setAuthNotice('Sign in with your operator account to go online.');
     }
   };
 
@@ -803,42 +811,6 @@ export default function App() {
       syncOfflineRecords(data.token);
     } catch (err: any) {
       setLoginError('Network error connecting to backend auth service.');
-      setLoginLoading(false);
-    }
-  };
-
-  // 1-Click Quick Demo Sign In
-  const handleQuickDemoLogin = async () => {
-    setLoginUsername('admin');
-    setLoginPassword('admin123');
-    setLoginLoading(true);
-    setLoginError('');
-    try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: 'admin', password: 'admin123' })
-      });
-      const data = await res.json();
-      if (data.token) {
-        setToken(data.token);
-        setUser(data.user);
-        localStorage.setItem('aquaplant_auth_token', data.token);
-        localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
-        localStorage.setItem('aquaplant_mode_chosen', 'true');
-        setIsFirstVisit(false);
-        localStorage.removeItem('aquaplant_explicit_logout');
-        setHasExplicitlyLoggedOut(false);
-        setGuestReadOnly(false);
-        setShowLoginModal(false);
-        fetchAllData();
-        syncOfflineRecords(data.token);
-      } else {
-        setLoginError(data.error || 'Demo login failed');
-      }
-    } catch (e) {
-      setLoginError('Demo login connection failed.');
-    } finally {
       setLoginLoading(false);
     }
   };
@@ -1393,6 +1365,15 @@ export default function App() {
       localStorage.setItem('aquaplant_wifi_backup_ssid', wifiBackupSsid);
       localStorage.setItem('aquaplant_wifi_backup_pass', wifiBackupPassword);
 
+      // Offline mode / guest preview: keep the credentials on this device only.
+      if (!token || isOfflineMode) {
+        setWifiSaveFeedback({
+          type: 'success',
+          message: '✓ Wi-Fi credentials saved on this device. They will be sent to the station when you are online.'
+        });
+        return;
+      }
+
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
@@ -1492,10 +1473,13 @@ export default function App() {
 
 
   useEffect(() => {
+    // Guest preview has no session token, so do not poll protected endpoints
+    // (that only produced a stream of 401 errors in the browser console).
+    if (guestReadOnly) return;
     fetchAllData();
     const interval = setInterval(fetchAllData, 4000);
     return () => clearInterval(interval);
-  }, [token, timeRange, logFilter]);
+  }, [token, timeRange, logFilter, guestReadOnly]);
 
   // Load firmware preview on modal open
   useEffect(() => {
@@ -1970,7 +1954,9 @@ export default function App() {
 
   // Check if we should render the dedicated Login Dashboard
   // This triggers when the user clicks Log Out (hasExplicitlyLoggedOut) OR when there is no active token/offline session
-  const showLoginDashboard = hasExplicitlyLoggedOut || (!token && !isOfflineMode && !guestReadOnly);
+  // A stored session always wins over a stale "logged out" flag (for example
+  // when the user signs in from the static /login.html page).
+  const showLoginDashboard = !token && !isOfflineMode && !guestReadOnly;
 
   // ==========================================================================
   //  REUSABLE WI-FI SETUP & ESP32 CONNECTION PAGE
@@ -2481,8 +2467,8 @@ export default function App() {
             DEDICATED LOGIN DASHBOARD (Operator + Administrator)
            ========================================================================= */}
         <main className="flex-1 flex flex-col items-center justify-center p-4 sm:p-6 w-full max-w-md mx-auto">
-            {/* Post-Logout Notice */}
-            {hasExplicitlyLoggedOut && (
+            {/* Post-Logout Notice (hidden when another notice, e.g. Go Online, is shown) */}
+            {hasExplicitlyLoggedOut && !authNotice && (
               <div className="w-full mb-4 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-xs flex items-center justify-between gap-2 shadow-sm">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
@@ -2537,7 +2523,7 @@ export default function App() {
                     type="text"
                     value={loginUsername}
                     onChange={(e) => setLoginUsername(e.target.value)}
-                    placeholder="admin"
+                    placeholder="Enter your username or email"
                     required
                     className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-500 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
                   />
@@ -2567,17 +2553,9 @@ export default function App() {
                 </button>
 
                 <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={handleQuickDemoLogin}
-                    disabled={loginLoading}
-                    className={`w-full py-2 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                      isDark ? 'border-[#163252] bg-[#020710] text-[#00f2fe] hover:bg-[#0d223a]' : 'border-slate-300 bg-slate-50 text-cyan-800 hover:bg-slate-100'
-                    }`}
-                    title="1-Click Demo Login (admin / admin123)"
-                  >
-                    🚀 1-Click Demo Login
-                  </button>
+                  <p className={`w-full text-[11px] text-center ${themeTextDim}`}>
+                    Use the account your administrator approved.
+                  </p>
                 </div>
               </form>
 
@@ -3370,7 +3348,9 @@ export default function App() {
           <div className={`${themeCardBg} rounded-2xl p-5 shadow-lg relative overflow-hidden transition-colors duration-200`}>
             <div className={`flex items-center justify-between text-xs font-bold uppercase tracking-wider ${themeTextMuted} mb-3`}>
               <span>AQUAPLANT System Status</span>
-              <span className={isDark ? 'text-[#00f2fe]' : 'text-cyan-700 font-bold'}>FEEDBACK MONITOR ACTIVE</span>
+              <span className={isDark ? 'text-[#00f2fe]' : 'text-cyan-700 font-bold'}>
+                {hasLiveTelemetry ? 'FEEDBACK MONITOR ACTIVE' : 'AWAITING SENSOR LINK'}
+              </span>
             </div>
             <div className="flex items-center gap-4">
               <div
@@ -3418,12 +3398,12 @@ export default function App() {
             <div className="flex items-center justify-between mt-2">
               <div>
                 <div className={`text-2xl font-extrabold ${isDark ? 'text-[#00f2fe]' : 'text-cyan-800'}`}>
-                  {controls.auto_mode ? 'AUTO (CLOSED LOOP)' : 'MANUAL OVERRIDE'}
+                  {controls.auto_mode ? 'AUTO (CLOSED LOOP)' : 'MANUAL CONTROL'}
                 </div>
                 <div className={`text-xs ${themeTextMuted}`}>
                   {controls.auto_mode
                     ? 'TDS/pH feedback commands relay actuation automatically'
-                    : 'Operator has taken manual command of relays'}
+                    : 'Automatic feedback is off — relays follow manual commands'}
                 </div>
               </div>
               <label className="relative inline-flex items-center cursor-pointer">
@@ -3999,12 +3979,12 @@ export default function App() {
           <span>Industrial Automated Hydroponic Reservoir Closed-Loop Control System</span>
         </div>
         <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1.5 text-[#00e676]">
-            <span className="w-2 h-2 rounded-full bg-[#00e676] animate-pulse" />
-            System Live
+          <span className={`flex items-center gap-1.5 ${esp32Status.is_online ? 'text-[#00e676]' : 'text-amber-400'}`}>
+            <span className={`w-2 h-2 rounded-full ${esp32Status.is_online ? 'bg-[#00e676] animate-pulse' : 'bg-amber-400'}`} />
+            {esp32Status.is_online ? 'System Live' : 'Station Offline'}
           </span>
           <span className={isDark ? 'text-[#163252]' : 'text-slate-300'}>|</span>
-          <span>ESP32 Hardware Linked</span>
+          <span>{esp32Status.is_online ? 'ESP32 Hardware Linked' : 'ESP32 Not Connected'}</span>
           <span className={isDark ? 'text-[#163252]' : 'text-slate-300'}>|</span>
           <span>v2.4.0 Production</span>
         </div>
@@ -4614,18 +4594,6 @@ export default function App() {
                     >
                       <Lock className="w-3.5 h-3.5" />
                       <span>{loginLoading ? 'Authenticating...' : 'Sign In (Online Server)'}</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={handleQuickDemoLogin}
-                      disabled={loginLoading}
-                      className={`px-3 py-2.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
-                        isDark ? 'border-[#163252] bg-[#0d223a] text-[#00f2fe] hover:bg-[#163252]' : 'border-slate-300 bg-slate-100 text-cyan-800 hover:bg-slate-200'
-                      }`}
-                      title="1-Click Demo Login"
-                    >
-                      Demo (1-Click)
                     </button>
                   </div>
                 </form>

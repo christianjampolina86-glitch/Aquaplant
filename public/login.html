@@ -50,23 +50,18 @@
         <form id="loginForm" onsubmit="handleLoginSubmit(event)">
           <div class="form-group">
             <label for="loginUsername">Operator Username or Email</label>
-            <input type="text" id="loginUsername" class="form-input" placeholder="e.g. admin or operator" required autocomplete="username" value="admin">
+            <input type="text" id="loginUsername" class="form-input" placeholder="Enter your username or email" required autocomplete="username">
           </div>
           <div class="form-group">
             <label for="loginPassword">Security Password</label>
-            <input type="password" id="loginPassword" class="form-input" placeholder="••••••••" required autocomplete="current-password" value="admin123">
+            <input type="password" id="loginPassword" class="form-input" placeholder="••••••••" required autocomplete="current-password">
           </div>
           <button type="submit" class="btn btn-cyan" style="width: 100%; padding: 12px; margin-top: 6px; font-size: 14px;" id="loginSubmitBtn">
             Access Telemetry Dashboard
           </button>
 
-          <div style="margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border-color); display: flex; gap: 8px;">
-            <button type="button" onclick="fillAdminCredentials()" class="btn btn-outline btn-sm" style="flex: 1; font-size: 11px;">
-              🔑 Default Admin (admin / admin123)
-            </button>
-            <button type="button" onclick="instantDemoLogin()" class="btn btn-cyan btn-sm" style="flex: 1; font-size: 11px;">
-              🚀 Quick 1-Click Entry
-            </button>
+          <div style="margin-top: 18px; padding-top: 14px; border-top: 1px dashed var(--border-color); text-align: center; font-size: 11px; color: #8ca2ba;">
+            Sign in with the account your administrator approved.
           </div>
 
           <!-- Standalone Offline Mode Quick Option Banner -->
@@ -146,7 +141,7 @@
 
     // If already authenticated, redirect straight to web dashboard
     if (Api.isAuthenticated()) {
-      window.location.replace('/dashboard.html');
+      window.location.replace('/');
     }
 
     window.switchAuthTab = function(tab) {
@@ -184,7 +179,7 @@
       showAlert('⚡ Offline Field Mode armed. Initializing standalone session...', 'success');
       Api.setOfflineMode(true, op, station);
       setTimeout(() => {
-        window.location.href = '/dashboard.html';
+        window.location.href = '/';
       }, 350);
     };
 
@@ -193,32 +188,6 @@
       const op = document.getElementById('offlineOpName').value.trim() || 'Field Operator';
       const station = document.getElementById('offlineStation').value.trim() || 'Greenhouse Alpha (Station #1)';
       instantOfflineLogin(op, station);
-    };
-
-    window.fillAdminCredentials = function() {
-      document.getElementById('loginUsername').value = 'admin';
-      document.getElementById('loginPassword').value = 'admin123';
-      showAlert('Demo admin credentials populated. Click "Access Telemetry Dashboard".', 'success');
-    };
-
-    window.instantDemoLogin = async function() {
-      showAlert('Authenticating demo session...', 'success');
-      try {
-        await Api.login('admin', 'admin123');
-        window.location.href = '/dashboard.html';
-      } catch (err) {
-        // If login failed, try registration and only continue when a token is issued
-        try {
-          const reg = await Api.register('admin', 'admin@aquaplant.local', 'admin123');
-          if (reg && reg.token) {
-            window.location.href = '/dashboard.html';
-          } else {
-            showAlert(reg?.message || 'Demo login unavailable. Register an account and wait for admin approval.', 'error');
-          }
-        } catch (regErr) {
-          showAlert('Demo login failed. Use the default admin credentials or register an account.', 'error');
-        }
-      }
     };
 
     function showAlert(msg, type = 'error') {
@@ -239,7 +208,7 @@
         await Api.login(username, password);
         showAlert('Authentication verified. Redirecting to dashboard...', 'success');
         setTimeout(() => {
-          window.location.href = '/dashboard.html';
+          window.location.href = '/';
         }, 400);
       } catch (err) {
         showAlert(err.message || 'Login failed. Verify credentials.', 'error');
@@ -274,7 +243,7 @@
 
         showAlert('Registration complete! Launching dashboard...', 'success');
         setTimeout(() => {
-          window.location.href = '/dashboard.html';
+          window.location.href = '/';
         }, 400);
       } catch (err) {
         showAlert(err.message || 'Registration rejected.', 'error');
