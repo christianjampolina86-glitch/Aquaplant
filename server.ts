@@ -1686,17 +1686,6 @@ app.use('/js', express.static(path.join(__dirname, 'public', 'js')));
 app.use('/css', express.static(path.join(__dirname, 'public', 'css')));
 app.use('/firmware', express.static(path.join(__dirname, 'firmware')));
 
-// Direct HTML pages mapping for capstone standalone deliverables
-app.get('/login.html', (req: Request, res: Response) => {
-  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-  res.sendFile(path.join(__dirname, 'public', 'login.html'));
-});
-
-app.get('/dashboard.html', (req: Request, res: Response) => {
-  res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-  res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
-});
-
 // Dedicated Administrator Portal (separate from the monitoring dashboard)
 app.get('/admin.html', (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -1730,8 +1719,10 @@ async function startServer() {
       });
     } else {
       app.use(express.static(path.join(__dirname, 'public')));
-      app.get('*', (req: Request, res: Response) => {
-        res.sendFile(path.join(__dirname, 'public', 'dashboard.html'));
+      app.get('*', (_req: Request, res: Response) => {
+        res
+          .status(404)
+          .send('AQUAPLANT frontend build not found. Run "npm run build" and restart the server.');
       });
     }
   }
@@ -1740,8 +1731,8 @@ async function startServer() {
     console.log(`\n======================================================`);
     console.log(`🌱 AQUAPLANT Web Monitoring & Control Server`);
     console.log(`   Running at: http://localhost:${PORT}`);
-    console.log(`   Login:      http://localhost:${PORT}/login.html`);
-    console.log(`   Dashboard:  http://localhost:${PORT}/dashboard.html`);
+    console.log(`   App:        http://localhost:${PORT}/`);
+    console.log(`   Admin:      http://localhost:${PORT}/admin.html`);
     console.log(`======================================================\n`);
   });
 }

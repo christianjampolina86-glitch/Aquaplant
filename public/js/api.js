@@ -65,14 +65,14 @@ export const Api = {
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem('aquaplant_offline_mode');
     localStorage.setItem('aquaplant_explicit_logout', 'true');
-    window.location.href = '/login.html';
+    window.location.href = '/';
   },
 
   async requireAuth() {
     if (this.isOfflineMode()) return true;
     const hasExplicitlyLoggedOut = localStorage.getItem('aquaplant_explicit_logout') === 'true';
     if (hasExplicitlyLoggedOut || !this.isAuthenticated()) {
-      window.location.replace('/login.html');
+      window.location.replace('/');
       return false;
     }
     return true;
