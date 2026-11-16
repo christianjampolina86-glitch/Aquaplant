@@ -534,8 +534,19 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req: 
 });
 
 // ============================================================================
-// SMS ALERTS DISPATCH ENGINE (Semaphore PH Telcos / Twilio / Webhook / Carrier Gateway)
+// SMS ALERTS DISPATCH ENGINE (IPROG SMS PH / Semaphore PH / Twilio / Webhook)
 // ============================================================================
+
+// Convert a Philippine mobile number to the format SMS gateways expect.
+// Accepts 09171234567, +639171234567, 639171234567, 9171234567.
+export function normalizePhoneNumber(raw: string): string {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (!digits) return '';
+  if (digits.startsWith('63') && digits.length === 12) return digits;
+  if (digits.startsWith('0') && digits.length === 11) return '63' + digits.slice(1);
+  if (digits.length === 10 && digits.startsWith('9')) return '63' + digits;
+  return digits;
+}
 
 export async function dispatchSmsAlert(
   eventType: SmsLog['event_type'],
@@ -547,9 +558,20 @@ export async function dispatchSmsAlert(
       return { sent: false, reason };
     }
 
-    const phone = settings.phone_number;
-    let provider = settings.sms_provider || 'SIMULATOR';
-    let status: SmsLog['status'] = 'DELIVERED';
+    const phone = normalizePhoneNumber(settings.phone_number);
+    if (!phone) {
+      return {
+        sent: false,
+        reason: 'No recipient SIM number saved. Enter the phone number that should receive alerts.'
+      };
+    }
+
+    const configuredProvider = (settings.sms_provider || 'IPROG').toUpperCase();
+    const iprogKey = settings.iprog_api_key || process.env.IPROG_API_KEY;
+    // Migrate old rows that still say SIMULATOR once an IPROG token exists.
+    const provider = configuredProvider === 'SIMULATOR' && iprogKey ? 'IPROG' : configuredProvider;
+    let status: SmsLog['status'] = 'SENT';
+    let reason4Failure: string | undefined;
 
     const semaphoreKey = settings.semaphore_api_key || process.env.SEMAPHORE_API_KEY;
     const twilioSid = process.env.TWILIO_ACCOUNT_SID;
@@ -557,40 +579,64 @@ export async function dispatchSmsAlert(
     const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
     const webhookUrl = process.env.SMS_WEBHOOK_URL;
 
-    // 1. Prioritize Semaphore if configured (Optimal for Philippines ₱500 budget: ₱0.50/SMS)
-    if (semaphoreKey && (settings.sms_provider === 'SEMAPHORE' || (!twilioSid && !webhookUrl))) {
-      provider = 'SEMAPHORE';
+    if (provider === 'IPROG') {
+      if (!iprogKey) {
+        return {
+          sent: false,
+          reason: 'IPROG SMS API token is not configured. Paste your IPROG API token in the SMS Alert Gateway and save it.'
+        };
+      }
+      try {
+        const res = await fetch('https://www.iprogsms.com/api/v1/sms_messages', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_token: iprogKey,
+            phone_number: phone,
+            message
+          })
+        });
+        const data = await res.json().catch(() => null);
+        const apiStatus = Number(data?.status);
+        const ok = res.ok && (!Number.isFinite(apiStatus) || apiStatus < 400) && !data?.error;
+        if (!ok) {
+          status = 'FAILED';
+          reason4Failure = data?.message || data?.error || `IPROG responded with HTTP ${res.status}`;
+        }
+      } catch (err: any) {
+        return { sent: false, reason: `Could not reach IPROG SMS: ${err.message}` };
+      }
+    } else if (provider === 'SEMAPHORE') {
+      if (!semaphoreKey) {
+        return { sent: false, reason: 'Semaphore API key is not configured.' };
+      }
       try {
         const params = new URLSearchParams({
           apikey: semaphoreKey,
           number: phone,
-          message: message,
+          message,
           sendername: settings.semaphore_sender_name || process.env.SEMAPHORE_SENDER_NAME || 'SEMAPHORE'
         });
-
         const res = await fetch('https://api.semaphore.co/api/v4/messages', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: params.toString()
         });
-
-        const data = await res.json().catch(() => null);
-        if (res.ok) {
-          status = 'DELIVERED';
-        } else {
-          console.warn('[SEMAPHORE API] Dispatch response:', data);
-          status = 'SENT';
+        if (!res.ok) {
+          status = 'FAILED';
+          reason4Failure = `Semaphore responded with HTTP ${res.status}`;
         }
-      } catch (err) {
-        console.warn('[SEMAPHORE API] Request failed:', err);
-        status = 'SENT';
+      } catch (err: any) {
+        return { sent: false, reason: `Could not reach Semaphore: ${err.message}` };
       }
-    } else if (twilioSid && twilioToken && twilioFrom && (settings.sms_provider === 'TWILIO' || !semaphoreKey)) {
-      provider = 'TWILIO';
+    } else if (provider === 'TWILIO') {
+      if (!twilioSid || !twilioToken || !twilioFrom) {
+        return { sent: false, reason: 'Twilio credentials are not configured on the server.' };
+      }
       try {
         const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64');
         const body = new URLSearchParams({
-          To: phone,
+          To: '+' + phone,
           From: twilioFrom,
           Body: message
         });
@@ -603,22 +649,32 @@ export async function dispatchSmsAlert(
           body: body.toString()
         });
         if (!res.ok) {
-          status = 'SENT';
+          status = 'FAILED';
+          reason4Failure = `Twilio responded with HTTP ${res.status}`;
         }
-      } catch {
-        status = 'SENT';
+      } catch (err: any) {
+        return { sent: false, reason: `Could not reach Twilio: ${err.message}` };
       }
-    } else if (webhookUrl) {
-      provider = 'WEBHOOK';
+    } else if (provider === 'WEBHOOK') {
+      if (!webhookUrl) {
+        return { sent: false, reason: 'SMS webhook URL is not configured on the server.' };
+      }
       try {
-        await fetch(webhookUrl, {
+        const res = await fetch(webhookUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ phone, message, eventType, timestamp: new Date().toISOString() })
         });
-      } catch {
-        // logged as sent
+        if (!res.ok) {
+          status = 'FAILED';
+          reason4Failure = `SMS webhook responded with HTTP ${res.status}`;
+        }
+      } catch (err: any) {
+        return { sent: false, reason: `Could not reach SMS webhook: ${err.message}` };
       }
+    } else {
+      // Explicit simulator mode: recorded as simulated, never claimed as delivered.
+      status = 'SIMULATED';
     }
 
     const log = await createSmsLog({
@@ -630,10 +686,16 @@ export async function dispatchSmsAlert(
     });
 
     await addSystemLog(
-      `[SMS DISPATCH] Recipient: ${phone} | Event: ${eventType} | "${message}"`,
-      eventType === 'LOW_PH' || eventType === 'HIGH_TDS' || eventType === 'FLUSH_TRIGGERED' ? 'ALERT' : 'INFO',
+      status === 'FAILED'
+        ? `[SMS FAILED] ${provider} | Recipient: ${phone} | ${reason4Failure || 'Unknown gateway error'}`
+        : `[SMS ${status}] ${provider} | Recipient: ${phone} | Event: ${eventType}`,
+      status === 'FAILED' ? 'ERROR' : eventType === 'LOW_PH' || eventType === 'HIGH_TDS' || eventType === 'FLUSH_TRIGGERED' ? 'ALERT' : 'INFO',
       'SMS_GATEWAY'
     );
+
+    if (status === 'FAILED') {
+      return { sent: false, reason: reason4Failure || 'SMS gateway rejected the message.', log };
+    }
 
     return { sent: true, log };
   } catch (error: any) {
@@ -1318,7 +1380,14 @@ app.get('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest
 
 app.post('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const updated = await updateSmsSettings(req.body);
+    const patch: Record<string, any> = { ...req.body };
+    if (typeof patch.phone_number === 'string' && patch.phone_number.trim()) {
+      patch.phone_number = normalizePhoneNumber(patch.phone_number);
+    }
+    if (typeof patch.iprog_api_key === 'string') {
+      patch.iprog_api_key = patch.iprog_api_key.trim();
+    }
+    const updated = await updateSmsSettings(patch);
     await addSystemLog(
       `SMS alert settings updated: Recipient=${updated.phone_number}, Active=${updated.enabled ? 'ON' : 'OFF'}`,
       'INFO',
@@ -1332,22 +1401,55 @@ app.post('/api/sms/settings', authenticateToken, async (req: AuthenticatedReques
 
 app.post('/api/sms/test', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { phone_number } = req.body;
-    if (phone_number) {
-      await updateSmsSettings({ phone_number });
-    }
+    const { phone_number, api_token } = req.body;
+    const patch: Record<string, any> = { sms_provider: 'IPROG' };
+    if (phone_number) patch.phone_number = normalizePhoneNumber(phone_number);
+    if (api_token) patch.iprog_api_key = api_token;
+    await updateSmsSettings(patch);
     const settings = await getSmsSettings();
     const timestamp = new Date().toLocaleTimeString();
-    const message = `AQUAPLANT TEST SMS: Real-time GSM & Cloud Alert Gateway verified active! Monitored hydroponic parameters: TDS 600-900, pH 5.5-6.5. (${timestamp})`;
-    
+    const message = `AQUAPLANT TEST SMS via IPROG: Your SMS alert gateway is working. Recipient SIM: ${normalizePhoneNumber(settings.phone_number) || 'not set'}. Alerts cover reservoir flush, pH 5.5-6.5, and TDS 600-900. (${timestamp})`;
+
     const result = await dispatchSmsAlert('TEST_ALERT', message);
     if (result.sent) {
-      res.json({ success: true, message: 'Test SMS dispatched successfully', log: result.log });
+      res.json({ success: true, message: 'Test SMS sent to the IPROG gateway', log: result.log });
     } else {
       res.status(400).json({ success: false, error: result.reason || 'Failed to dispatch test SMS' });
     }
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Error sending test SMS' });
+  }
+});
+
+// Check IPROG SMS load balance (₱1 per SMS)
+app.get('/api/sms/iprog/account', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
+  try {
+    const settings = await getSmsSettings();
+    const apiToken = (req.query.token as string) || settings.iprog_api_key || process.env.IPROG_API_KEY;
+
+    if (!apiToken) {
+      res.status(400).json({ error: 'IPROG API token is not configured.' });
+      return;
+    }
+
+    const response = await fetch(
+      `https://www.iprogsms.com/api/v1/account/sms_credits?api_token=${encodeURIComponent(apiToken)}`
+    );
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok || !data || data.status === 'error' || Number(data.status) >= 400) {
+      res.status(response.status >= 400 ? response.status : 400).json({
+        error: data?.message || 'IPROG rejected the API token.'
+      });
+      return;
+    }
+
+    res.json({
+      success: true,
+      load_balance: Number(data?.data?.load_balance ?? 0)
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: 'Error querying IPROG account: ' + error.message });
   }
 });
 

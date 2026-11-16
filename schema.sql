@@ -137,7 +137,7 @@ ON DUPLICATE KEY UPDATE `device_name` = `device_name`;
 -- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS `sms_settings` (
   `id` INT PRIMARY KEY DEFAULT 1,
-  `phone_number` VARCHAR(32) NOT NULL DEFAULT '+63 917 888 1234',
+  `phone_number` VARCHAR(32) NOT NULL DEFAULT '',
   `enabled` TINYINT(1) NOT NULL DEFAULT 1,
   `notify_on_flush` TINYINT(1) NOT NULL DEFAULT 1,
   `notify_on_low_ph` TINYINT(1) NOT NULL DEFAULT 1,
@@ -146,7 +146,11 @@ CREATE TABLE IF NOT EXISTS `sms_settings` (
   `notify_on_high_tds` TINYINT(1) NOT NULL DEFAULT 1,
   `notify_on_low_water` TINYINT(1) NOT NULL DEFAULT 1,
   `cooldown_minutes` INT NOT NULL DEFAULT 5,
-  `sms_provider` VARCHAR(32) NOT NULL DEFAULT 'SIMULATOR',
+  `sms_provider` VARCHAR(32) NOT NULL DEFAULT 'IPROG',
+  `iprog_api_key` VARCHAR(255) DEFAULT NULL,
+  `iprog_sender_name` VARCHAR(64) DEFAULT NULL,
+  `semaphore_api_key` VARCHAR(255) DEFAULT NULL,
+  `semaphore_sender_name` VARCHAR(64) DEFAULT NULL,
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -168,7 +172,7 @@ CREATE TABLE IF NOT EXISTS `sms_logs` (
 
 -- Seed Initial SMS Alert Settings
 INSERT INTO `sms_settings` (`id`, `phone_number`, `enabled`, `notify_on_flush`, `notify_on_low_ph`, `notify_on_high_ph`, `notify_on_low_tds`, `notify_on_high_tds`, `notify_on_low_water`, `cooldown_minutes`, `sms_provider`)
-VALUES (1, '+63 917 888 1234', 1, 1, 1, 1, 1, 1, 1, 5, 'SIMULATOR')
+VALUES (1, '', 1, 1, 1, 1, 1, 1, 1, 5, 'IPROG')
 ON DUPLICATE KEY UPDATE `phone_number` = `phone_number`;
 
 -- Initial Startup Log

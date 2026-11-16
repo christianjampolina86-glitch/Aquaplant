@@ -109,28 +109,30 @@ interface SystemLog {
 
 export interface SmsAlertSetting {
   id: number;
-  recipient_phone: string;
-  is_enabled: number;
-  alert_flush_triggered: number;
-  alert_low_ph: number;
-  alert_high_ph: number;
-  alert_low_tds: number;
-  alert_high_tds: number;
-  alert_low_water: number;
+  phone_number: string;
+  enabled: number;
+  notify_on_flush: number;
+  notify_on_low_ph: number;
+  notify_on_high_ph: number;
+  notify_on_low_tds: number;
+  notify_on_high_tds: number;
+  notify_on_low_water: number;
   cooldown_minutes: number;
-  sms_provider?: 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
+  sms_provider?: 'IPROG' | 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
+  iprog_api_key?: string;
+  iprog_sender_name?: string;
   semaphore_api_key?: string;
   semaphore_sender_name?: string;
-  last_updated?: string;
+  updated_at?: string;
 }
 
 export interface SmsLog {
   id: number;
-  recipient_phone: string;
+  phone_number: string;
   event_type: string;
   message: string;
-  status: 'QUEUED' | 'SENT' | 'SIMULATED' | 'FAILED';
-  gateway_sid?: string;
+  status: 'SENT' | 'DELIVERED' | 'SIMULATED' | 'FAILED';
+  provider?: string;
   created_at: string;
 }
 
@@ -275,15 +277,16 @@ export default function App() {
   const [showSmsModal, setShowSmsModal] = useState(false);
   const [smsSettings, setSmsSettings] = useState<SmsAlertSetting | null>({
     id: 1,
-    recipient_phone: '+1-555-0199',
-    is_enabled: 1,
-    alert_flush_triggered: 1,
-    alert_low_ph: 1,
-    alert_high_ph: 1,
-    alert_low_tds: 1,
-    alert_high_tds: 1,
-    alert_low_water: 1,
-    cooldown_minutes: 5
+    phone_number: '',
+    enabled: 1,
+    notify_on_flush: 1,
+    notify_on_low_ph: 1,
+    notify_on_high_ph: 1,
+    notify_on_low_tds: 1,
+    notify_on_high_tds: 1,
+    notify_on_low_water: 1,
+    cooldown_minutes: 5,
+    sms_provider: 'IPROG'
   });
   const [smsLogs, setSmsLogs] = useState<SmsLog[]>([]);
   const [cloudDbStatus, setCloudDbStatus] = useState<CloudDbStatus | null>(null);
@@ -291,30 +294,30 @@ export default function App() {
   const [testSmsStatus, setTestSmsStatus] = useState<{ success: boolean; message: string; sid?: string } | null>(null);
   const [savingSms, setSavingSms] = useState(false);
   const [smsFeedback, setSmsFeedback] = useState<string | null>(null);
-  const [semaphoreBalance, setSemaphoreBalance] = useState<{ credit_balance?: number; status?: string; account_name?: string } | null>(null);
+  const [iprogBalance, setIprogBalance] = useState<{ load_balance?: number } | null>(null);
   const [checkingBalance, setCheckingBalance] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
 
-  const fetchSemaphoreBalance = async (keyOverride?: string) => {
+  const fetchIprogBalance = async (tokenOverride?: string) => {
     setCheckingBalance(true);
     setBalanceError(null);
     try {
-      const k = keyOverride || smsSettings?.semaphore_api_key;
-      const url = k ? `/api/sms/semaphore/account?apikey=${encodeURIComponent(k)}` : '/api/sms/semaphore/account';
+      const k = tokenOverride || smsSettings?.iprog_api_key;
+      const url = k ? `/api/sms/iprog/account?token=${encodeURIComponent(k)}` : '/api/sms/iprog/account';
       const headers: Record<string, string> = {};
       const curToken = token || localStorage.getItem('aquaplant_auth_token');
       if (curToken) headers['Authorization'] = `Bearer ${curToken}`;
       const res = await fetch(url, { headers });
       const data = await res.json();
       if (res.ok && data.success) {
-        setSemaphoreBalance(data);
+        setIprogBalance(data);
       } else {
-        setSemaphoreBalance(null);
-        setBalanceError(data.error || 'Failed to check balance');
+        setIprogBalance(null);
+        setBalanceError(data.error || 'Failed to check IPROG load');
       }
     } catch {
-      setSemaphoreBalance(null);
-      setBalanceError('Network error checking Semaphore balance');
+      setIprogBalance(null);
+      setBalanceError('Network error checking IPROG load');
     } finally {
       setCheckingBalance(false);
     }
@@ -1071,12 +1074,14 @@ export default function App() {
       if (smsRes.ok) {
         const smsData = await smsRes.json();
         if (smsData.settings) setSmsSettings(smsData.settings);
+        else if (smsData.phone_number !== undefined) setSmsSettings(smsData);
       }
 
       const smsLogsRes = await fetch('/api/sms/logs?limit=30', { headers });
       if (smsLogsRes.ok) {
         const smsLogsData = await smsLogsRes.json();
         if (smsLogsData.logs) setSmsLogs(smsLogsData.logs);
+        else if (smsLogsData.length !== undefined) setSmsLogs(smsLogsData);
       }
 
       // Cloud Database Status
@@ -1132,7 +1137,10 @@ export default function App() {
       const res = await fetch('/api/sms/test', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ phone: smsSettings?.recipient_phone })
+        body: JSON.stringify({
+          phone_number: smsSettings?.phone_number,
+          api_token: smsSettings?.iprog_api_key
+        })
       });
       const data = await res.json();
       if (res.ok && data.success) {
@@ -1146,6 +1154,7 @@ export default function App() {
         if (logsRes.ok) {
           const lData = await logsRes.json();
           if (lData.logs) setSmsLogs(lData.logs);
+          else if (lData.length !== undefined) setSmsLogs(lData);
         }
       } else {
         setTestSmsStatus({
@@ -2855,7 +2864,7 @@ export default function App() {
                 type="button"
                 onClick={() => {
                   setShowSmsModal(true);
-                  if (smsSettings?.semaphore_api_key) fetchSemaphoreBalance(smsSettings.semaphore_api_key);
+                  if (smsSettings?.iprog_api_key) fetchIprogBalance(smsSettings.iprog_api_key);
                   setSidebarOpen(false);
                 }}
                 className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
@@ -2869,11 +2878,11 @@ export default function App() {
                 </div>
                 {!sidebarCollapsed && (
                   <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded ${
-                    smsSettings?.is_enabled
+                    smsSettings?.enabled
                       ? 'bg-emerald-500/20 text-emerald-400 font-bold'
                       : 'bg-slate-800 text-slate-400'
                   }`}>
-                    {smsSettings?.is_enabled ? 'ARMED' : 'OFF'}
+                    {smsSettings?.enabled ? 'ARMED' : 'OFF'}
                   </span>
                 )}
               </button>
@@ -3229,17 +3238,17 @@ export default function App() {
               type="button"
               onClick={() => {
                 setShowSmsModal(true);
-                if (smsSettings?.semaphore_api_key) fetchSemaphoreBalance(smsSettings.semaphore_api_key);
+                if (smsSettings?.iprog_api_key) fetchIprogBalance(smsSettings.iprog_api_key);
               }}
               className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition cursor-pointer ${
-                smsSettings?.is_enabled
+                smsSettings?.enabled
                   ? (isDark ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400' : 'bg-emerald-50 border-emerald-300 text-emerald-700')
                   : (isDark ? 'bg-slate-900 border-slate-700 text-slate-400' : 'bg-slate-100 border-slate-300 text-slate-700')
               }`}
             >
               <Smartphone className="w-3.5 h-3.5" />
               <span className="hidden md:inline">SMS Gateway</span>
-              <span className={`w-2 h-2 rounded-full ${smsSettings?.is_enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
+              <span className={`w-2 h-2 rounded-full ${smsSettings?.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
             </button>
 
             {/* Wi-Fi Setup Button (opens the setup page inside the dashboard) */}
@@ -4729,8 +4738,8 @@ export default function App() {
                     <h2 className={`text-lg font-black tracking-wide ${themeTextMain}`}>
                       Autonomous SMS Alert Gateway
                     </h2>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${smsSettings?.is_enabled ? (isDark ? 'bg-[#00e676]/20 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800') : 'bg-slate-200 text-slate-600'}`}>
-                      {smsSettings?.is_enabled ? 'SMS ENGINE ACTIVE' : 'DISPATCH PAUSED'}
+                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${smsSettings?.enabled ? (isDark ? 'bg-[#00e676]/20 text-[#00e676] border border-[#00e676]/40' : 'bg-emerald-100 text-emerald-800') : 'bg-slate-200 text-slate-600'}`}>
+                      {smsSettings?.enabled ? 'SMS ENGINE ACTIVE' : 'DISPATCH PAUSED'}
                     </span>
                   </div>
                   <p className={`text-xs ${themeTextMuted}`}>
@@ -4767,116 +4776,93 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <div>
                       <span className={`text-xs font-bold uppercase tracking-wider ${themeTextDim}`}>
-                        Cellular Gateway Provider
+                        SMS Gateway Provider
                       </span>
                       <p className={`text-xs ${themeTextMuted}`}>
-                        Choose your SMS transmission gateway
+                        IPROG SMS · ₱1 per message
                       </p>
                     </div>
-                    <div className="flex items-center gap-1.5 p-1 bg-slate-900/60 rounded-lg border border-slate-700/50">
-                      <button
-                        type="button"
-                        onClick={() => handleSaveSmsSetting({ sms_provider: 'SEMAPHORE' })}
-                        className={`px-2.5 py-1 text-xs font-bold rounded cursor-pointer transition ${
-                          smsSettings?.sms_provider === 'SEMAPHORE' || !smsSettings?.sms_provider
-                            ? 'bg-emerald-500 text-slate-950 shadow-sm'
-                            : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Semaphore (₱0.50/SMS)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleSaveSmsSetting({ sms_provider: 'TWILIO' })}
-                        className={`px-2.5 py-1 text-xs font-bold rounded cursor-pointer transition ${
-                          smsSettings?.sms_provider === 'TWILIO'
-                            ? 'bg-cyan-500 text-slate-950 shadow-sm'
-                            : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Twilio (Global)
-                      </button>
-                    </div>
+                    <span className="text-[10px] font-bold px-2 py-1 rounded bg-emerald-500/20 text-emerald-400 border border-emerald-500/40">
+                      IPROG
+                    </span>
                   </div>
 
-                  {/* Semaphore Specific Configuration */}
-                  {(smsSettings?.sms_provider === 'SEMAPHORE' || !smsSettings?.sms_provider) && (
-                    <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 space-y-3">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
-                          <span>🇵🇭 Semaphore API (Best for ₱500 Budget)</span>
-                        </span>
-                        <a
-                          href="https://semaphore.co"
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-[11px] text-emerald-400 hover:underline"
-                        >
-                          semaphore.co (GCash / Maya) ↗
-                        </a>
-                      </div>
-
-                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                        <div className="sm:col-span-2">
-                          <label className={`block text-[11px] font-semibold ${themeTextMuted} mb-1`}>
-                            Semaphore API Key
-                          </label>
-                          <input
-                            type="password"
-                            value={smsSettings?.semaphore_api_key || ''}
-                            onChange={(e) => setSmsSettings((prev) => prev ? { ...prev, semaphore_api_key: e.target.value } : null)}
-                            onBlur={(e) => handleSaveSmsSetting({ semaphore_api_key: e.target.value })}
-                            placeholder="Enter your Semaphore API key"
-                            className={`w-full font-mono text-xs px-2.5 py-1.5 rounded border outline-none ${
-                              isDark ? 'bg-[#030a16] border-[#163252] text-white focus:border-emerald-400' : 'bg-white border-slate-300 text-slate-900 focus:border-emerald-600'
-                            }`}
-                          />
-                        </div>
-                        <div>
-                          <label className={`block text-[11px] font-semibold ${themeTextMuted} mb-1`}>
-                            Account Balance
-                          </label>
-                          <button
-                            type="button"
-                            onClick={() => fetchSemaphoreBalance()}
-                            disabled={checkingBalance}
-                            className="w-full py-1.5 px-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded text-xs font-semibold hover:bg-emerald-500/30 transition cursor-pointer flex items-center justify-center gap-1"
-                          >
-                            {checkingBalance ? 'Checking...' : 'Check Balance'}
-                          </button>
-                        </div>
-                      </div>
-
-                      {semaphoreBalance && (
-                        <div className="p-2 rounded bg-emerald-900/30 border border-emerald-500/30 text-xs flex items-center justify-between font-mono">
-                          <span className="text-emerald-300">{semaphoreBalance.account_name || 'Account Active'}</span>
-                          <span className="font-bold text-white">
-                            Balance: ₱{Number(semaphoreBalance.credit_balance || 0).toFixed(2)} ({Math.floor((semaphoreBalance.credit_balance || 0) / 0.5)} SMS credits)
-                          </span>
-                        </div>
-                      )}
-                      {balanceError && (
-                        <div className="text-[11px] text-amber-400 font-mono">
-                          {balanceError}
-                        </div>
-                      )}
-                      <p className={`text-[10px] ${themeTextDim}`}>
-                        A ₱500 reload on Semaphore delivers ~1,000 real-time SMS alerts to Smart, Globe, TM, TNT, and DITO with non-expiring credits.
-                      </p>
+                  {/* IPROG SMS Configuration */}
+                  <div className="p-3 rounded-lg border border-emerald-500/30 bg-emerald-950/20 space-y-3">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-semibold text-emerald-400 flex items-center gap-1.5">
+                        <span>🇵🇭 IPROG SMS API</span>
+                      </span>
+                      <a
+                        href="https://www.iprogsms.com"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-[11px] text-emerald-400 hover:underline"
+                      >
+                        iprogsms.com (login for token) ↗
+                      </a>
                     </div>
-                  )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="sm:col-span-2">
+                        <label className={`block text-[11px] font-semibold ${themeTextMuted} mb-1`}>
+                          IPROG API Token
+                        </label>
+                        <input
+                          type="password"
+                          value={smsSettings?.iprog_api_key || ''}
+                          onChange={(e) => setSmsSettings((prev) => prev ? { ...prev, iprog_api_key: e.target.value } : null)}
+                          onBlur={(e) => handleSaveSmsSetting({ iprog_api_key: e.target.value, sms_provider: 'IPROG' })}
+                          placeholder="Paste the API token from your IPROG SMS account"
+                          className={`w-full font-mono text-xs px-2.5 py-1.5 rounded border outline-none ${
+                            isDark ? 'bg-[#030a16] border-[#163252] text-white focus:border-emerald-400' : 'bg-white border-slate-300 text-slate-900 focus:border-emerald-600'
+                          }`}
+                        />
+                      </div>
+                      <div>
+                        <label className={`block text-[11px] font-semibold ${themeTextMuted} mb-1`}>
+                          Account Load
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => fetchIprogBalance()}
+                          disabled={checkingBalance}
+                          className="w-full py-1.5 px-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded text-xs font-semibold hover:bg-emerald-500/30 transition cursor-pointer flex items-center justify-center gap-1"
+                        >
+                          {checkingBalance ? 'Checking...' : 'Check Load'}
+                        </button>
+                      </div>
+                    </div>
+
+                    {iprogBalance && (
+                      <div className="p-2 rounded bg-emerald-900/30 border border-emerald-500/30 text-xs flex items-center justify-between font-mono">
+                        <span className="text-emerald-300">Remaining load</span>
+                        <span className="font-bold text-white">
+                          ₱{Number(iprogBalance.load_balance || 0).toFixed(2)} · {Math.floor(Number(iprogBalance.load_balance || 0))} SMS
+                        </span>
+                      </div>
+                    )}
+                    {balanceError && (
+                      <div className="text-[11px] text-amber-400 font-mono">
+                        {balanceError}
+                      </div>
+                    )}
+                    <p className={`text-[10px] ${themeTextDim}`}>
+                      Find your API token on the IPROG SMS dashboard after logging in. Each alert costs ₱1 and is sent from the IPROG sender name.
+                    </p>
+                  </div>
 
                   {/* Master Switch & Recipient Phone */}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                     <div>
                       <label className={`block text-xs font-semibold ${themeTextMuted} mb-1`}>
-                        Recipient Cellphone (+63 / 09xx)
+                        Recipient SIM Number
                       </label>
                       <input
                         type="text"
-                        value={smsSettings?.recipient_phone || ''}
-                        onChange={(e) => setSmsSettings((prev) => prev ? { ...prev, recipient_phone: e.target.value } : null)}
-                        onBlur={(e) => handleSaveSmsSetting({ recipient_phone: e.target.value })}
+                        value={smsSettings?.phone_number || ''}
+                        onChange={(e) => setSmsSettings((prev) => prev ? { ...prev, phone_number: e.target.value } : null)}
+                        onBlur={(e) => handleSaveSmsSetting({ phone_number: e.target.value, sms_provider: 'IPROG' })}
                         placeholder="09171234567 or +639171234567"
                         className={`w-full font-mono text-xs px-3 py-2 rounded-lg border outline-none ${
                           isDark
@@ -4885,7 +4871,7 @@ export default function App() {
                         }`}
                       />
                       <span className={`text-[10px] ${themeTextDim} mt-0.5 block`}>
-                        Recipient for automatic threshold alarm SMS
+                        The SIM number that receives the alerts (09xxxxxxxxx or +639xxxxxxxxx)
                       </span>
                     </div>
 
@@ -4920,16 +4906,16 @@ export default function App() {
                     </span>
                     <button
                       type="button"
-                      onClick={() => handleSaveSmsSetting({ is_enabled: smsSettings?.is_enabled ? 0 : 1 })}
+                      onClick={() => handleSaveSmsSetting({ enabled: smsSettings?.enabled ? 0 : 1 })}
                       disabled={savingSms}
                       className={`px-3 py-1 rounded-md text-xs font-bold cursor-pointer transition flex items-center gap-1.5 ${
-                        smsSettings?.is_enabled
+                        smsSettings?.enabled
                           ? 'bg-[#00e676] text-[#030a16] shadow-sm'
                           : (isDark ? 'bg-[#163252] text-slate-300 hover:bg-[#20456e]' : 'bg-slate-300 text-slate-700 hover:bg-slate-400')
                       }`}
                     >
                       <Power className="w-3 h-3" />
-                      <span>{smsSettings?.is_enabled ? 'DISPATCH ENABLED' : 'DISPATCH PAUSED'}</span>
+                      <span>{smsSettings?.enabled ? 'DISPATCH ENABLED' : 'DISPATCH PAUSED'}</span>
                     </button>
                   </div>
                 </div>
@@ -4948,7 +4934,7 @@ export default function App() {
                   <div className="space-y-2.5">
                     {/* 1. Flush Alert */}
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                      smsSettings?.alert_flush_triggered
+                      smsSettings?.notify_on_flush
                         ? (isDark ? 'bg-[#00f2fe]/10 border-[#00f2fe]/40' : 'bg-cyan-50 border-cyan-200')
                         : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
                     }`}>
@@ -4965,20 +4951,20 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSaveSmsSetting({ alert_flush_triggered: smsSettings?.alert_flush_triggered ? 0 : 1 })}
+                        onClick={() => handleSaveSmsSetting({ notify_on_flush: smsSettings?.notify_on_flush ? 0 : 1 })}
                         className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
-                          smsSettings?.alert_flush_triggered
+                          smsSettings?.notify_on_flush
                             ? 'bg-[#00f2fe] text-[#030a16]'
                             : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
                         }`}
                       >
-                        {smsSettings?.alert_flush_triggered ? 'ACTIVE' : 'OFF'}
+                        {smsSettings?.notify_on_flush ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
 
                     {/* 2. Low pH Alert */}
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                      smsSettings?.alert_low_ph
+                      smsSettings?.notify_on_low_ph
                         ? (isDark ? 'bg-amber-500/10 border-amber-500/40' : 'bg-amber-50 border-amber-200')
                         : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
                     }`}>
@@ -4995,20 +4981,20 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSaveSmsSetting({ alert_low_ph: smsSettings?.alert_low_ph ? 0 : 1 })}
+                        onClick={() => handleSaveSmsSetting({ notify_on_low_ph: smsSettings?.notify_on_low_ph ? 0 : 1 })}
                         className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
-                          smsSettings?.alert_low_ph
+                          smsSettings?.notify_on_low_ph
                             ? 'bg-amber-500 text-black'
                             : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
                         }`}
                       >
-                        {smsSettings?.alert_low_ph ? 'ACTIVE' : 'OFF'}
+                        {smsSettings?.notify_on_low_ph ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
 
                     {/* 3. High pH Alert */}
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                      smsSettings?.alert_high_ph
+                      smsSettings?.notify_on_high_ph
                         ? (isDark ? 'bg-purple-500/10 border-purple-500/40' : 'bg-purple-50 border-purple-200')
                         : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
                     }`}>
@@ -5025,20 +5011,20 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSaveSmsSetting({ alert_high_ph: smsSettings?.alert_high_ph ? 0 : 1 })}
+                        onClick={() => handleSaveSmsSetting({ notify_on_high_ph: smsSettings?.notify_on_high_ph ? 0 : 1 })}
                         className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
-                          smsSettings?.alert_high_ph
+                          smsSettings?.notify_on_high_ph
                             ? 'bg-purple-500 text-white'
                             : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
                         }`}
                       >
-                        {smsSettings?.alert_high_ph ? 'ACTIVE' : 'OFF'}
+                        {smsSettings?.notify_on_high_ph ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
 
                     {/* 4. Low TDS Alert */}
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                      smsSettings?.alert_low_tds
+                      smsSettings?.notify_on_low_tds
                         ? (isDark ? 'bg-cyan-500/10 border-cyan-500/40' : 'bg-cyan-50 border-cyan-200')
                         : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
                     }`}>
@@ -5055,20 +5041,20 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSaveSmsSetting({ alert_low_tds: smsSettings?.alert_low_tds ? 0 : 1 })}
+                        onClick={() => handleSaveSmsSetting({ notify_on_low_tds: smsSettings?.notify_on_low_tds ? 0 : 1 })}
                         className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
-                          smsSettings?.alert_low_tds
+                          smsSettings?.notify_on_low_tds
                             ? 'bg-cyan-500 text-black'
                             : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
                         }`}
                       >
-                        {smsSettings?.alert_low_tds ? 'ACTIVE' : 'OFF'}
+                        {smsSettings?.notify_on_low_tds ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
 
                     {/* 5. High TDS Alert */}
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                      smsSettings?.alert_high_tds
+                      smsSettings?.notify_on_high_tds
                         ? (isDark ? 'bg-rose-500/10 border-rose-500/40' : 'bg-rose-50 border-rose-200')
                         : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
                     }`}>
@@ -5085,20 +5071,20 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSaveSmsSetting({ alert_high_tds: smsSettings?.alert_high_tds ? 0 : 1 })}
+                        onClick={() => handleSaveSmsSetting({ notify_on_high_tds: smsSettings?.notify_on_high_tds ? 0 : 1 })}
                         className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
-                          smsSettings?.alert_high_tds
+                          smsSettings?.notify_on_high_tds
                             ? 'bg-rose-500 text-white'
                             : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
                         }`}
                       >
-                        {smsSettings?.alert_high_tds ? 'ACTIVE' : 'OFF'}
+                        {smsSettings?.notify_on_high_tds ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
 
                     {/* 6. Low Reservoir Level */}
                     <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
-                      smsSettings?.alert_low_water
+                      smsSettings?.notify_on_low_water
                         ? (isDark ? 'bg-blue-500/10 border-blue-500/40' : 'bg-blue-50 border-blue-200')
                         : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
                     }`}>
@@ -5115,14 +5101,14 @@ export default function App() {
                       </div>
                       <button
                         type="button"
-                        onClick={() => handleSaveSmsSetting({ alert_low_water: smsSettings?.alert_low_water ? 0 : 1 })}
+                        onClick={() => handleSaveSmsSetting({ notify_on_low_water: smsSettings?.notify_on_low_water ? 0 : 1 })}
                         className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
-                          smsSettings?.alert_low_water
+                          smsSettings?.notify_on_low_water
                             ? 'bg-blue-500 text-white'
                             : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
                         }`}
                       >
-                        {smsSettings?.alert_low_water ? 'ACTIVE' : 'OFF'}
+                        {smsSettings?.notify_on_low_water ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
                   </div>
@@ -5192,7 +5178,7 @@ export default function App() {
                     </span>
                   </div>
                   <p className={`text-xs ${themeTextMuted} mb-3`}>
-                    Triggers an instant alert to <strong className={themeTextMain}>{smsSettings?.recipient_phone || 'your phone'}</strong> verifying carrier gateway integration.
+                    Triggers an instant alert to <strong className={themeTextMain}>{smsSettings?.phone_number || 'your SIM number'}</strong> through IPROG SMS.
                   </p>
 
                   {testSmsStatus && (
@@ -5289,18 +5275,24 @@ export default function App() {
                             </span>
                           </td>
                           <td className={`py-2 px-2 text-[11px] ${themeTextMain}`}>
-                            {log.recipient_phone}
+                            {log.phone_number}
                           </td>
                           <td className={`py-2 px-2 text-[11px] font-sans ${themeTextMuted} max-w-xs truncate`} title={log.message}>
                             {log.message}
                           </td>
                           <td className="py-2 px-2">
                             <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
-                              log.status === 'SENT' || log.status === 'SIMULATED'
-                                ? 'bg-[#00e676]/20 text-[#00e676]'
-                                : 'bg-rose-500/20 text-rose-400'
+                              log.status === 'FAILED'
+                                ? 'bg-rose-500/20 text-rose-400'
+                                : 'bg-[#00e676]/20 text-[#00e676]'
                             }`}>
-                              {log.status === 'SIMULATED' ? '✓ SIMULATED' : '✓ DELIVERED'}
+                              {log.status === 'FAILED'
+                                ? '✕ FAILED'
+                                : log.status === 'SIMULATED'
+                                ? '✓ SIMULATED'
+                                : log.status === 'SENT'
+                                ? '✓ QUEUED'
+                                : '✓ DELIVERED'}
                             </span>
                           </td>
                         </tr>

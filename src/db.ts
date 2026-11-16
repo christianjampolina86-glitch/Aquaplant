@@ -89,7 +89,9 @@ export interface SmsAlertSetting {
   notify_on_high_tds: number; // 1 or 0
   notify_on_low_water: number; // 1 or 0
   cooldown_minutes: number;
-  sms_provider: 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
+  sms_provider: 'IPROG' | 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
+  iprog_api_key?: string;
+  iprog_sender_name?: string;
   semaphore_api_key?: string;
   semaphore_sender_name?: string;
   updated_at: string;
@@ -103,7 +105,7 @@ export interface SmsLog {
   phone_number: string;
   message: string;
   event_type: 'FLUSH_TRIGGERED' | 'LOW_PH' | 'HIGH_PH' | 'LOW_TDS' | 'HIGH_TDS' | 'LOW_WATER' | 'TEST_ALERT' | 'SYSTEM_RECOVERY';
-  status: 'SENT' | 'DELIVERED' | 'FAILED';
+  status: 'SENT' | 'DELIVERED' | 'SIMULATED' | 'FAILED';
   provider: string;
   created_at: string;
 }
@@ -121,7 +123,7 @@ class InMemoryStore {
   systemLogs: SystemLog[] = [];
   smsSettings: SmsAlertSetting = {
     id: 1,
-    phone_number: '+63 917 888 1234',
+    phone_number: '',
     enabled: 1,
     notify_on_flush: 1,
     notify_on_low_ph: 1,
@@ -130,7 +132,7 @@ class InMemoryStore {
     notify_on_high_tds: 1,
     notify_on_low_water: 1,
     cooldown_minutes: 5,
-    sms_provider: 'SIMULATOR',
+    sms_provider: 'IPROG',
     updated_at: new Date().toISOString()
   };
   smsLogs: SmsLog[] = [];
@@ -338,7 +340,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
     await p.query(`
       CREATE TABLE IF NOT EXISTS sms_settings (
         id INT PRIMARY KEY DEFAULT 1,
-        phone_number VARCHAR(32) NOT NULL DEFAULT '+63 917 888 1234',
+        phone_number VARCHAR(32) NOT NULL DEFAULT '',
         enabled TINYINT(1) NOT NULL DEFAULT 1,
         notify_on_flush TINYINT(1) NOT NULL DEFAULT 1,
         notify_on_low_ph TINYINT(1) NOT NULL DEFAULT 1,
@@ -347,10 +349,37 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
         notify_on_high_tds TINYINT(1) NOT NULL DEFAULT 1,
         notify_on_low_water TINYINT(1) NOT NULL DEFAULT 1,
         cooldown_minutes INT NOT NULL DEFAULT 5,
-        sms_provider VARCHAR(32) NOT NULL DEFAULT 'SIMULATOR',
+        sms_provider VARCHAR(32) NOT NULL DEFAULT 'IPROG',
+        iprog_api_key VARCHAR(255) DEFAULT NULL,
+        iprog_sender_name VARCHAR(64) DEFAULT NULL,
+        semaphore_api_key VARCHAR(255) DEFAULT NULL,
+        semaphore_sender_name VARCHAR(64) DEFAULT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+
+    // Older deployments created sms_settings without these gateway columns.
+    // Add them individually so an existing database keeps working.
+    const smsGatewayColumns = [
+      'ADD COLUMN iprog_api_key VARCHAR(255) DEFAULT NULL',
+      'ADD COLUMN iprog_sender_name VARCHAR(64) DEFAULT NULL',
+      'ADD COLUMN semaphore_api_key VARCHAR(255) DEFAULT NULL',
+      'ADD COLUMN semaphore_sender_name VARCHAR(64) DEFAULT NULL'
+    ];
+    for (const clause of smsGatewayColumns) {
+      try {
+        await p.query(`ALTER TABLE sms_settings ${clause}`);
+      } catch {
+        // Column already exists - safe to ignore
+      }
+    }
+
+    // Remove the old placeholder number so alerts can never go to a stranger.
+    try {
+      await p.query(`UPDATE sms_settings SET phone_number = '' WHERE phone_number = '+63 917 888 1234'`);
+    } catch {
+      // Safe to ignore
+    }
 
     // 6. sms_logs table
     await p.query(`
@@ -383,7 +412,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
     // Seed default SMS alert configuration
     await p.query(`
       INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, cooldown_minutes, sms_provider)
-      VALUES (1, '+63 917 888 1234', 1, 1, 1, 1, 1, 1, 1, 5, 'SIMULATOR')
+      VALUES (1, '', 1, 1, 1, 1, 1, 1, 1, 5, 'IPROG')
       ON DUPLICATE KEY UPDATE phone_number = phone_number;
     `);
 
@@ -1195,7 +1224,9 @@ export async function getSmsSettings(): Promise<SmsAlertSetting> {
           notify_on_high_tds: Number(r.notify_on_high_tds),
           notify_on_low_water: Number(r.notify_on_low_water),
           cooldown_minutes: Number(r.cooldown_minutes || 5),
-          sms_provider: (r.sms_provider as any) || 'SIMULATOR',
+          sms_provider: (r.sms_provider as any) || 'IPROG',
+          iprog_api_key: r.iprog_api_key || undefined,
+          iprog_sender_name: r.iprog_sender_name || undefined,
           semaphore_api_key: r.semaphore_api_key || undefined,
           semaphore_sender_name: r.semaphore_sender_name || undefined,
           updated_at: new Date(r.updated_at || Date.now()).toISOString()
@@ -1219,8 +1250,8 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
   if (isMySqlActive && pool) {
     try {
       await pool.query(
-        `INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, cooldown_minutes, sms_provider, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, cooldown_minutes, sms_provider, iprog_api_key, iprog_sender_name, semaphore_api_key, semaphore_sender_name, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE
            phone_number = VALUES(phone_number),
            enabled = VALUES(enabled),
@@ -1232,6 +1263,10 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
            notify_on_low_water = VALUES(notify_on_low_water),
            cooldown_minutes = VALUES(cooldown_minutes),
            sms_provider = VALUES(sms_provider),
+           iprog_api_key = VALUES(iprog_api_key),
+           iprog_sender_name = VALUES(iprog_sender_name),
+           semaphore_api_key = VALUES(semaphore_api_key),
+           semaphore_sender_name = VALUES(semaphore_sender_name),
            updated_at = NOW()`,
         [
           updated.id,
@@ -1244,7 +1279,11 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
           updated.notify_on_high_tds,
           updated.notify_on_low_water,
           updated.cooldown_minutes,
-          updated.sms_provider
+          updated.sms_provider,
+          updated.iprog_api_key || null,
+          updated.iprog_sender_name || null,
+          updated.semaphore_api_key || null,
+          updated.semaphore_sender_name || null
         ]
       );
     } catch {
