@@ -895,7 +895,7 @@ export async function getLatestSensorReading(): Promise<SensorReading | null> {
   if (isMySqlActive && pool) {
     const [rows] = await pool.query<mysql.RowDataPacket[]>(
       `SELECT * FROM sensor_readings
-       WHERE device_ip IS NULL OR device_ip NOT IN ('CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO')
+       WHERE device_ip IS NULL OR device_ip NOT IN ('CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO', 'OFFLINE_SYNC')
        ORDER BY recorded_at DESC LIMIT 1`
     );
     if (!rows.length) return null;
@@ -912,8 +912,8 @@ export async function getLatestSensorReading(): Promise<SensorReading | null> {
     };
   }
 
-  // Memory fallback: skip diagnostic/demo rows so accounts still read zero.
-  const synthetic = new Set(['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO']);
+  // Memory fallback: skip diagnostic/demo/offline rows so accounts still read zero.
+  const synthetic = new Set(['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO', 'OFFLINE_SYNC']);
   for (let i = memoryStore.sensorReadings.length - 1; i >= 0; i--) {
     const r = memoryStore.sensorReadings[i];
     if (!synthetic.has(r.device_ip || '')) return r;
@@ -928,7 +928,7 @@ export async function getSensorHistory(hours = 24): Promise<SensorReading[]> {
     const [rows] = await pool.query<mysql.RowDataPacket[]>(
       `SELECT * FROM sensor_readings
        WHERE recorded_at >= ?
-         AND (device_ip IS NULL OR device_ip NOT IN ('CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO'))
+         AND (device_ip IS NULL OR device_ip NOT IN ('CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO', 'OFFLINE_SYNC'))
        ORDER BY recorded_at ASC`,
       [cutoff]
     );
@@ -945,7 +945,7 @@ export async function getSensorHistory(hours = 24): Promise<SensorReading[]> {
   }
 
   const cutoffIso = cutoff.toISOString();
-  const synthetic = new Set(['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO']);
+  const synthetic = new Set(['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO', 'OFFLINE_SYNC']);
   return memoryStore.sensorReadings
     .filter((r) => r.recorded_at >= cutoffIso && !synthetic.has(r.device_ip || ''))
     .slice(-300); // Reasonable limit for canvas graph

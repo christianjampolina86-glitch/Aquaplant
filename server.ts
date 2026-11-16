@@ -972,8 +972,22 @@ app.get('/api/sensors/latest', authenticateToken, async (req: AuthenticatedReque
       lastSeenAgo = `${diffHours}h ago`;
     }
 
+    // Do not show a stale reading as if it were live. When no real ESP32 packet
+    // arrived recently, every monitoring value is zero so accounts never display
+    // yesterday's numbers (or a diagnostic test) as if they were current.
+    const liveReading = isOnline
+      ? reading
+      : {
+          ...reading,
+          tds: 0,
+          ph: 0,
+          temperature: 0,
+          water_level: 0,
+          humidity: 0
+        };
+
     res.json({
-      reading,
+      reading: liveReading,
       esp32_status: {
         is_online: isOnline,
         last_seen_ago: isOnline

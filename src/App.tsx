@@ -1070,11 +1070,15 @@ export default function App() {
 
     try {
       // Latest Telemetry
+      let deviceOnline = false;
       const latestRes = await fetch('/api/sensors/latest', { headers });
       if (latestRes.ok && !demoModeRef.current) {
         const data = await latestRes.json();
         if (data.reading) setLatestReading(data.reading);
-        if (data.esp32_status) setEsp32Status(data.esp32_status);
+        if (data.esp32_status) {
+          setEsp32Status(data.esp32_status);
+          deviceOnline = !!data.esp32_status.is_online;
+        }
       }
       if (demoModeRef.current) return;
 
@@ -1089,7 +1093,11 @@ export default function App() {
       const histRes = await fetch(`/api/sensors/history?range=${timeRange}`, { headers });
       if (histRes.ok && !demoModeRef.current) {
         const histData = await histRes.json();
-        if (histData.readings) setHistoryData(histData.readings);
+        if (histData.readings) {
+          // Only draw the trend while the ESP32 is actually reporting. This keeps
+          // the whole dashboard at zero when the station is offline.
+          setHistoryData(deviceOnline ? histData.readings : []);
+        }
       }
       if (demoModeRef.current) return;
 
@@ -2087,14 +2095,17 @@ export default function App() {
   };
 
   // Health Status Logic
-  // Live values fall back to 0 (never to an invented demo number).
-  const liveTds = latestReading?.tds ?? 0;
-  const livePh = latestReading?.ph ?? 0;
-  const liveTemp = latestReading?.temperature ?? 0;
-  const liveLevel = latestReading?.water_level ?? 0;
-  const liveHumidity = latestReading?.humidity ?? 0;
+  // Values are only shown while the ESP32 is genuinely online, or during the
+  // one-click demo. Otherwise every account reads zero (no stale numbers).
+  const liveValuesVisible = demoMode || esp32Status.is_online;
+  const liveTds = liveValuesVisible ? latestReading?.tds ?? 0 : 0;
+  const livePh = liveValuesVisible ? latestReading?.ph ?? 0 : 0;
+  const liveTemp = liveValuesVisible ? latestReading?.temperature ?? 0 : 0;
+  const liveLevel = liveValuesVisible ? latestReading?.water_level ?? 0 : 0;
+  const liveHumidity = liveValuesVisible ? latestReading?.humidity ?? 0 : 0;
   const hasLiveTelemetry =
-    liveTds > 0 || livePh > 0 || liveTemp > 0 || liveLevel > 0 || liveHumidity > 0;
+    liveValuesVisible &&
+    (liveTds > 0 || livePh > 0 || liveTemp > 0 || liveLevel > 0 || liveHumidity > 0);
 
   const isAnomaly =
     hasLiveTelemetry &&
