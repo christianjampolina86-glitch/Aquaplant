@@ -689,7 +689,7 @@ export async function dispatchSmsAlert(
       status === 'FAILED'
         ? `[SMS FAILED] ${provider} | Recipient: ${phone} | ${reason4Failure || 'Unknown gateway error'}`
         : `[SMS ${status}] ${provider} | Recipient: ${phone} | Event: ${eventType}`,
-      status === 'FAILED' ? 'ERROR' : eventType === 'LOW_PH' || eventType === 'HIGH_TDS' || eventType === 'FLUSH_TRIGGERED' ? 'ALERT' : 'INFO',
+      status === 'FAILED' ? 'ERROR' : eventType === 'LOW_PH' || eventType === 'HIGH_TDS' || eventType === 'FLUSH_TRIGGERED' || eventType === 'EMPTY_TANK' ? 'ALERT' : 'INFO',
       'SMS_GATEWAY'
     );
 
@@ -705,7 +705,19 @@ export async function dispatchSmsAlert(
 }
 
 /**
- * Evaluates instantaneous telemetry for SMS notification triggers (low pH, high pH, low TDS, high TDS, low water)
+ * Empty refill tank detection.
+ * The water-level sensor reads 0% when the tank is dry. To avoid a false alarm
+ * from a single noisy reading, we only send once the level has stayed at or
+ * below 5% for five continuous minutes. The alert re-arms as soon as water is
+ * detected again.
+ */
+const WATER_EMPTY_THRESHOLD = 5; // percent
+const EMPTY_TANK_CONFIRM_MS = 5 * 60 * 1000;
+let waterEmptySince: number | null = null;
+let emptyTankAlertSent = false;
+
+/**
+ * Evaluates instantaneous telemetry for SMS notification triggers (low pH, high pH, low TDS, high TDS, low water, empty tank)
  */
 async function evaluateTelemetryForSmsAlerts(reading: { tds: number; ph: number; temperature: number; water_level: number; humidity?: number }) {
   try {
@@ -737,12 +749,35 @@ async function evaluateTelemetryForSmsAlerts(reading: { tds: number; ph: number;
       );
     }
 
-    // 5. Low water level alert (< 30%)
-    if (reading.water_level < 30) {
+    // 5. Low water level alert (< 30% but the tank is not empty)
+    if (reading.water_level >= WATER_EMPTY_THRESHOLD && reading.water_level < 30) {
       await dispatchSmsAlert(
         'LOW_WATER',
         `AQUAPLANT WARNING: Low reservoir capacity! Liquid level at ${reading.water_level.toFixed(1)}% (Target: >70%). Fresh Water Pump refill recommended.`
       );
+    }
+
+    // 6. Empty refill tank alert: no water detected for 5 continuous minutes
+    const level = Number(reading.water_level);
+    if (Number.isFinite(level)) {
+      if (level > WATER_EMPTY_THRESHOLD) {
+        // Water is present again - reset the timer and allow a new alert later
+        waterEmptySince = null;
+        emptyTankAlertSent = false;
+      } else {
+        const now = Date.now();
+        if (waterEmptySince === null) {
+          waterEmptySince = now;
+        }
+        if (!emptyTankAlertSent && now - waterEmptySince >= EMPTY_TANK_CONFIRM_MS) {
+          const emptyMinutes = Math.max(5, Math.round((now - waterEmptySince) / 60000));
+          const result = await dispatchSmsAlert(
+            'EMPTY_TANK',
+            `AQUAPLANT CRITICAL: No water detected in the refill tank for ${emptyMinutes} minutes (level ${level.toFixed(1)}%). The tank appears EMPTY - refill it immediately. If the tank is not actually empty, check the water-level sensor wiring.`
+          );
+          if (result.sent) emptyTankAlertSent = true;
+        }
+      }
     }
   } catch (err) {
     console.error('Error evaluating telemetry for SMS:', err);

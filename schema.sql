@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS `sms_settings` (
   `notify_on_low_tds` TINYINT(1) NOT NULL DEFAULT 1,
   `notify_on_high_tds` TINYINT(1) NOT NULL DEFAULT 1,
   `notify_on_low_water` TINYINT(1) NOT NULL DEFAULT 1,
+  `notify_on_empty_tank` TINYINT(1) NOT NULL DEFAULT 1,
   `cooldown_minutes` INT NOT NULL DEFAULT 5,
   `sms_provider` VARCHAR(32) NOT NULL DEFAULT 'IPROG',
   `iprog_api_key` VARCHAR(255) DEFAULT NULL,
@@ -171,8 +172,8 @@ CREATE TABLE IF NOT EXISTS `sms_logs` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Seed Initial SMS Alert Settings
-INSERT INTO `sms_settings` (`id`, `phone_number`, `enabled`, `notify_on_flush`, `notify_on_low_ph`, `notify_on_high_ph`, `notify_on_low_tds`, `notify_on_high_tds`, `notify_on_low_water`, `cooldown_minutes`, `sms_provider`)
-VALUES (1, '', 1, 1, 1, 1, 1, 1, 1, 5, 'IPROG')
+INSERT INTO `sms_settings` (`id`, `phone_number`, `enabled`, `notify_on_flush`, `notify_on_low_ph`, `notify_on_high_ph`, `notify_on_low_tds`, `notify_on_high_tds`, `notify_on_low_water`, `notify_on_empty_tank`, `cooldown_minutes`, `sms_provider`)
+VALUES (1, '', 1, 1, 1, 1, 1, 1, 1, 1, 5, 'IPROG')
 ON DUPLICATE KEY UPDATE `phone_number` = `phone_number`;
 
 -- Initial Startup Log

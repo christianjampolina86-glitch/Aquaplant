@@ -88,6 +88,7 @@ export interface SmsAlertSetting {
   notify_on_low_tds: number; // 1 or 0
   notify_on_high_tds: number; // 1 or 0
   notify_on_low_water: number; // 1 or 0
+  notify_on_empty_tank: number; // 1 or 0
   cooldown_minutes: number;
   sms_provider: 'IPROG' | 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
   iprog_api_key?: string;
@@ -104,7 +105,7 @@ export interface SmsLog {
   id: number;
   phone_number: string;
   message: string;
-  event_type: 'FLUSH_TRIGGERED' | 'LOW_PH' | 'HIGH_PH' | 'LOW_TDS' | 'HIGH_TDS' | 'LOW_WATER' | 'TEST_ALERT' | 'SYSTEM_RECOVERY';
+  event_type: 'FLUSH_TRIGGERED' | 'LOW_PH' | 'HIGH_PH' | 'LOW_TDS' | 'HIGH_TDS' | 'LOW_WATER' | 'EMPTY_TANK' | 'TEST_ALERT' | 'SYSTEM_RECOVERY';
   status: 'SENT' | 'DELIVERED' | 'SIMULATED' | 'FAILED';
   provider: string;
   created_at: string;
@@ -131,6 +132,7 @@ class InMemoryStore {
     notify_on_low_tds: 1,
     notify_on_high_tds: 1,
     notify_on_low_water: 1,
+    notify_on_empty_tank: 1,
     cooldown_minutes: 5,
     sms_provider: 'IPROG',
     updated_at: new Date().toISOString()
@@ -198,29 +200,9 @@ class InMemoryStore {
       created_at: twentyMinsAgo
     });
 
-    // Generate 24 hours of realistic initial hydroponic telemetry (1 reading every 10 mins)
-    const now = Date.now();
-    for (let i = 144; i >= 0; i--) {
-      const timeOffset = now - i * 10 * 60 * 1000;
-      // Slight smooth sinusoidal variation around optimal values
-      const angle = (144 - i) * 0.15;
-      const tds = Number((740 + Math.sin(angle) * 45 + (Math.random() * 12 - 6)).toFixed(1));
-      const ph = Number((6.05 + Math.cos(angle * 0.7) * 0.28 + (Math.random() * 0.08 - 0.04)).toFixed(2));
-      const temp = Number((23.8 + Math.sin(angle * 0.5) * 1.8 + (Math.random() * 0.4 - 0.2)).toFixed(1));
-      const level = Number((86.0 - (i % 25) * 0.4 + (Math.random() * 0.8 - 0.4)).toFixed(1));
-      const humidity = Number((64.0 + Math.sin(angle * 0.4) * 4.5 + (Math.random() * 1.2 - 0.6)).toFixed(1));
+    // No demo telemetry is seeded. Every account reads zero until a real ESP32
+    // packet (or a local demo session in the browser) provides numbers.
 
-      this.sensorReadings.push({
-        id: this.nextId.sensor++,
-        tds,
-        ph,
-        temperature: temp,
-        water_level: level,
-        humidity,
-        device_ip: '192.168.1.105',
-        recorded_at: new Date(timeOffset).toISOString()
-      });
-    }
   }
 
   addLog(message: string, level: SystemLog['level'], source: string = 'SYSTEM', createdAt?: string): SystemLog {
@@ -348,6 +330,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
         notify_on_low_tds TINYINT(1) NOT NULL DEFAULT 1,
         notify_on_high_tds TINYINT(1) NOT NULL DEFAULT 1,
         notify_on_low_water TINYINT(1) NOT NULL DEFAULT 1,
+        notify_on_empty_tank TINYINT(1) NOT NULL DEFAULT 1,
         cooldown_minutes INT NOT NULL DEFAULT 5,
         sms_provider VARCHAR(32) NOT NULL DEFAULT 'IPROG',
         iprog_api_key VARCHAR(255) DEFAULT NULL,
@@ -361,6 +344,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
     // Older deployments created sms_settings without these gateway columns.
     // Add them individually so an existing database keeps working.
     const smsGatewayColumns = [
+      'ADD COLUMN notify_on_empty_tank TINYINT(1) NOT NULL DEFAULT 1',
       'ADD COLUMN iprog_api_key VARCHAR(255) DEFAULT NULL',
       'ADD COLUMN iprog_sender_name VARCHAR(64) DEFAULT NULL',
       'ADD COLUMN semaphore_api_key VARCHAR(255) DEFAULT NULL',
@@ -411,8 +395,8 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
 
     // Seed default SMS alert configuration
     await p.query(`
-      INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, cooldown_minutes, sms_provider)
-      VALUES (1, '', 1, 1, 1, 1, 1, 1, 1, 5, 'IPROG')
+      INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, notify_on_empty_tank, cooldown_minutes, sms_provider)
+      VALUES (1, '', 1, 1, 1, 1, 1, 1, 1, 1, 5, 'IPROG')
       ON DUPLICATE KEY UPDATE phone_number = phone_number;
     `);
 
@@ -910,7 +894,9 @@ export async function insertSensorReadingsBatch(
 export async function getLatestSensorReading(): Promise<SensorReading | null> {
   if (isMySqlActive && pool) {
     const [rows] = await pool.query<mysql.RowDataPacket[]>(
-      'SELECT * FROM sensor_readings ORDER BY recorded_at DESC LIMIT 1'
+      `SELECT * FROM sensor_readings
+       WHERE device_ip IS NULL OR device_ip NOT IN ('CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO')
+       ORDER BY recorded_at DESC LIMIT 1`
     );
     if (!rows.length) return null;
     const r = rows[0];
@@ -926,8 +912,13 @@ export async function getLatestSensorReading(): Promise<SensorReading | null> {
     };
   }
 
-  if (memoryStore.sensorReadings.length === 0) return null;
-  return memoryStore.sensorReadings[memoryStore.sensorReadings.length - 1];
+  // Memory fallback: skip diagnostic/demo rows so accounts still read zero.
+  const synthetic = new Set(['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO']);
+  for (let i = memoryStore.sensorReadings.length - 1; i >= 0; i--) {
+    const r = memoryStore.sensorReadings[i];
+    if (!synthetic.has(r.device_ip || '')) return r;
+  }
+  return null;
 }
 
 export async function getSensorHistory(hours = 24): Promise<SensorReading[]> {
@@ -935,7 +926,10 @@ export async function getSensorHistory(hours = 24): Promise<SensorReading[]> {
 
   if (isMySqlActive && pool) {
     const [rows] = await pool.query<mysql.RowDataPacket[]>(
-      'SELECT * FROM sensor_readings WHERE recorded_at >= ? ORDER BY recorded_at ASC',
+      `SELECT * FROM sensor_readings
+       WHERE recorded_at >= ?
+         AND (device_ip IS NULL OR device_ip NOT IN ('CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO'))
+       ORDER BY recorded_at ASC`,
       [cutoff]
     );
     return rows.map((r) => ({
@@ -951,8 +945,9 @@ export async function getSensorHistory(hours = 24): Promise<SensorReading[]> {
   }
 
   const cutoffIso = cutoff.toISOString();
+  const synthetic = new Set(['CALIBRATION-PROBE', 'ESP32_LINK_TEST', 'DEMO']);
   return memoryStore.sensorReadings
-    .filter((r) => r.recorded_at >= cutoffIso)
+    .filter((r) => r.recorded_at >= cutoffIso && !synthetic.has(r.device_ip || ''))
     .slice(-300); // Reasonable limit for canvas graph
 }
 
@@ -1223,6 +1218,7 @@ export async function getSmsSettings(): Promise<SmsAlertSetting> {
           notify_on_low_tds: Number(r.notify_on_low_tds),
           notify_on_high_tds: Number(r.notify_on_high_tds),
           notify_on_low_water: Number(r.notify_on_low_water),
+          notify_on_empty_tank: Number(r.notify_on_empty_tank ?? 1),
           cooldown_minutes: Number(r.cooldown_minutes || 5),
           sms_provider: (r.sms_provider as any) || 'IPROG',
           iprog_api_key: r.iprog_api_key || undefined,
@@ -1250,8 +1246,8 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
   if (isMySqlActive && pool) {
     try {
       await pool.query(
-        `INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, cooldown_minutes, sms_provider, iprog_api_key, iprog_sender_name, semaphore_api_key, semaphore_sender_name, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, notify_on_empty_tank, cooldown_minutes, sms_provider, iprog_api_key, iprog_sender_name, semaphore_api_key, semaphore_sender_name, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE
            phone_number = VALUES(phone_number),
            enabled = VALUES(enabled),
@@ -1261,6 +1257,7 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
            notify_on_low_tds = VALUES(notify_on_low_tds),
            notify_on_high_tds = VALUES(notify_on_high_tds),
            notify_on_low_water = VALUES(notify_on_low_water),
+           notify_on_empty_tank = VALUES(notify_on_empty_tank),
            cooldown_minutes = VALUES(cooldown_minutes),
            sms_provider = VALUES(sms_provider),
            iprog_api_key = VALUES(iprog_api_key),
@@ -1278,6 +1275,7 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
           updated.notify_on_low_tds,
           updated.notify_on_high_tds,
           updated.notify_on_low_water,
+          updated.notify_on_empty_tank,
           updated.cooldown_minutes,
           updated.sms_provider,
           updated.iprog_api_key || null,
@@ -1392,6 +1390,9 @@ export async function canDispatchSms(eventType: SmsLog['event_type']): Promise<{
   }
   if (eventType === 'LOW_WATER' && !settings.notify_on_low_water) {
     return { canSend: false, reason: 'Low water level SMS notifications disabled.', settings };
+  }
+  if (eventType === 'EMPTY_TANK' && !settings.notify_on_empty_tank) {
+    return { canSend: false, reason: 'Empty refill tank SMS notifications disabled.', settings };
   }
 
   // TEST_ALERT bypasses cooldown

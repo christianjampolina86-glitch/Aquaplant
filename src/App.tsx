@@ -48,7 +48,10 @@ import {
   Users,
   UserCheck,
   UserX,
-  WifiOff
+  WifiOff,
+  Play,
+  Square,
+  FlaskConical
 } from 'lucide-react';
 import {
   testConnection as testFirebaseConnection,
@@ -117,6 +120,7 @@ export interface SmsAlertSetting {
   notify_on_low_tds: number;
   notify_on_high_tds: number;
   notify_on_low_water: number;
+  notify_on_empty_tank: number;
   cooldown_minutes: number;
   sms_provider?: 'IPROG' | 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
   iprog_api_key?: string;
@@ -252,6 +256,13 @@ export default function App() {
   const [offlineSyncing, setOfflineSyncing] = useState(false);
   const [offlineSyncNotice, setOfflineSyncNotice] = useState('');
 
+  // One-click demo mode. Demo numbers are generated ONLY in this browser so a
+  // presentation can show live-looking values without writing anything to the
+  // database. Every account stays at zero unless they start the demo too.
+  const [demoMode, setDemoMode] = useState(false);
+  const demoModeRef = useRef(false);
+  const demoStepRef = useRef(0);
+
   useEffect(() => {
     latestReadingRef.current = latestReading;
   }, [latestReading]);
@@ -285,6 +296,7 @@ export default function App() {
     notify_on_low_tds: 1,
     notify_on_high_tds: 1,
     notify_on_low_water: 1,
+    notify_on_empty_tank: 1,
     cooldown_minutes: 5,
     sms_provider: 'IPROG'
   });
@@ -613,6 +625,19 @@ export default function App() {
     setUser(null);
     setIsOfflineMode(false);
     setGuestReadOnly(false);
+    // Leaving the dashboard always ends a demo session.
+    demoModeRef.current = false;
+    setDemoMode(false);
+    setLatestReading({
+      id: 0,
+      tds: 0,
+      ph: 0,
+      temperature: 0,
+      water_level: 0,
+      humidity: 0,
+      recorded_at: ''
+    });
+    setHistoryData([]);
     localStorage.removeItem('aquaplant_auth_token');
     localStorage.removeItem('aquaplant_auth_user');
     localStorage.removeItem('aquaplant_offline_mode');
@@ -1005,31 +1030,13 @@ export default function App() {
 
   // Telemetry, Controls, and Logs Polling
   const fetchAllData = async () => {
+    // While the one-click demo is running the numbers on screen are demo values
+    // and must not be replaced by the real (zero) database readings every 4s.
+    if (demoModeRef.current) return;
+
     if (isOfflineMode) {
-      // Standalone field mode: keep local telemetry active with gentle sensor fluctuations
-      const prev = latestReadingRef.current;
-      const hasBaseline =
-        !!prev &&
-        (prev.tds > 0 || prev.ph > 0 || prev.temperature > 0 || prev.water_level > 0);
-      if (prev && hasBaseline) {
-        const driftTds = (Math.random() - 0.5) * 3;
-        const driftPh = (Math.random() - 0.5) * 0.03;
-        const driftTemp = (Math.random() - 0.5) * 0.1;
-        const driftLevel = (Math.random() - 0.5) * 0.1;
-        const next: SensorReading = {
-          ...prev,
-          tds: Math.max(650, Math.min(880, +(prev.tds + driftTds).toFixed(1))),
-          ph: Math.max(5.85, Math.min(6.45, +(prev.ph + driftPh).toFixed(2))),
-          temperature: Math.max(22.0, Math.min(26.5, +(prev.temperature + driftTemp).toFixed(1))),
-          water_level: Math.max(70, Math.min(95, +(prev.water_level + driftLevel).toFixed(1))),
-          recorded_at: new Date().toISOString()
-        };
-        latestReadingRef.current = next;
-        // Save the sample locally so it can be uploaded after signing back in.
-        queueOfflineReading(next);
-        setOfflineQueuedCount(getOfflineQueueCounts().total);
-        setLatestReading(next);
-      }
+      // Offline field mode has no live sensor feed, so monitoring values stay at
+      // zero. Real numbers require the ESP32 to be online (or the one-click demo).
       return;
     }
 
@@ -1042,11 +1049,12 @@ export default function App() {
     try {
       // Latest Telemetry
       const latestRes = await fetch('/api/sensors/latest', { headers });
-      if (latestRes.ok) {
+      if (latestRes.ok && !demoModeRef.current) {
         const data = await latestRes.json();
         if (data.reading) setLatestReading(data.reading);
         if (data.esp32_status) setEsp32Status(data.esp32_status);
       }
+      if (demoModeRef.current) return;
 
       // Controls
       const ctrlRes = await fetch('/api/controls', { headers });
@@ -1057,10 +1065,11 @@ export default function App() {
 
       // History
       const histRes = await fetch(`/api/sensors/history?range=${timeRange}`, { headers });
-      if (histRes.ok) {
+      if (histRes.ok && !demoModeRef.current) {
         const histData = await histRes.json();
         if (histData.readings) setHistoryData(histData.readings);
       }
+      if (demoModeRef.current) return;
 
       // Logs
       const logsUrl = logFilter !== 'ALL' ? `/api/logs?limit=40&level=${logFilter}` : '/api/logs?limit=40';
@@ -1098,6 +1107,59 @@ export default function App() {
     } catch (e) {
       console.warn('Sync interval error:', e);
     }
+  };
+
+  // Build one plausible demo reading. These numbers are for presentation only;
+  // they are never sent to the API, queued offline, or stored in the database.
+  const buildDemoReading = (step: number, recordedAt?: string): SensorReading => {
+    const angle = step * 0.22;
+    const tds = +(740 + Math.sin(angle) * 55 + (Math.random() * 14 - 7)).toFixed(1);
+    const ph = +(6.05 + Math.cos(angle * 0.7) * 0.3 + (Math.random() * 0.1 - 0.05)).toFixed(2);
+    const temperature = +(24.2 + Math.sin(angle * 0.5) * 1.6 + (Math.random() * 0.4 - 0.2)).toFixed(1);
+    const water_level = +(86 - (step % 30) * 0.3 + (Math.random() * 0.6 - 0.3)).toFixed(1);
+    const humidity = +(64 + Math.cos(angle * 0.4) * 4 + (Math.random() * 1 - 0.5)).toFixed(1);
+    return {
+      id: -1,
+      tds,
+      ph,
+      temperature,
+      water_level,
+      humidity,
+      recorded_at: recordedAt || new Date().toISOString()
+    };
+  };
+
+  // Start the one-click demo: seed an hour of history, then drift live.
+  const startDemoMode = () => {
+    demoModeRef.current = true;
+    setDemoMode(true);
+    const now = Date.now();
+    const seeded: SensorReading[] = [];
+    for (let i = 59; i >= 0; i--) {
+      seeded.push(buildDemoReading(59 - i, new Date(now - i * 60000).toISOString()));
+    }
+    demoStepRef.current = 60;
+    setHistoryData(seeded);
+    setLatestReading(seeded[seeded.length - 1]);
+    setEsp32Status({ is_online: true, last_seen_ago: 'Demo mode — not a real sensor' });
+  };
+
+  // Exit the demo: clear the demo values and reload the real (zero) readings.
+  const stopDemoMode = () => {
+    demoModeRef.current = false;
+    setDemoMode(false);
+    setLatestReading({
+      id: 0,
+      tds: 0,
+      ph: 0,
+      temperature: 0,
+      water_level: 0,
+      humidity: 0,
+      recorded_at: ''
+    });
+    setHistoryData([]);
+    setEsp32Status({ is_online: false, last_seen_ago: 'No telemetry yet' });
+    fetchAllData();
   };
 
   // SMS Settings Update Handler
@@ -1494,6 +1556,19 @@ export default function App() {
     const interval = setInterval(fetchAllData, 4000);
     return () => clearInterval(interval);
   }, [token, timeRange, logFilter, guestReadOnly]);
+
+  // One-click demo: refresh the demo numbers every 3 seconds while active.
+  useEffect(() => {
+    if (!demoMode) return;
+    const timer = setInterval(() => {
+      demoStepRef.current += 1;
+      const next = buildDemoReading(demoStepRef.current);
+      setLatestReading(next);
+      setHistoryData((prev) => [...prev, next].slice(-120));
+    }, 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demoMode]);
 
   // Pause the background poll for SMS fields while the SMS window is open so
   // typing a SIM number or API token cannot be overwritten mid-edit.
@@ -3196,6 +3271,21 @@ export default function App() {
               {clockString || '--:--:--'}
             </div>
 
+            {/* One-Click Demo: shows demo values in this browser only */}
+            <button
+              type="button"
+              onClick={() => (demoMode ? stopDemoMode() : startDemoMode())}
+              className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border transition active:scale-95 cursor-pointer ${
+                demoMode
+                  ? 'bg-fuchsia-500/20 border-fuchsia-400/60 text-fuchsia-300'
+                  : (isDark ? 'bg-slate-900 border-slate-700 text-slate-300 hover:text-fuchsia-300 hover:border-fuchsia-500/40' : 'bg-slate-100 border-slate-300 text-slate-700 hover:text-fuchsia-700')
+              }`}
+              title={demoMode ? 'Stop the demo and return to real (zero) readings' : 'Show demo telemetry in this browser only — nothing is saved to the database'}
+            >
+              {demoMode ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              <span className="hidden md:inline">{demoMode ? 'Exit Demo' : '1-Click Demo'}</span>
+            </button>
+
             {/* Offline Mode Indicator Badge & Switcher */}
             {isOfflineMode ? (
               <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border bg-amber-500/15 border-amber-500/40 text-amber-300 text-xs font-mono font-bold animate-pulse">
@@ -3338,6 +3428,26 @@ export default function App() {
 
         {/* Main Full-Width Desktop Web Workspace */}
         <main className="max-w-[1560px] w-full mx-auto p-4 sm:p-6 flex-1 flex flex-col gap-6">
+        {/* Demo mode banner: makes it obvious these numbers are not real */}
+        {demoMode && (
+          <div className="rounded-xl border px-4 py-3 text-xs flex items-start gap-2.5 shadow-sm bg-fuchsia-500/10 border-fuchsia-500/40 text-fuchsia-200">
+            <FlaskConical className="w-4 h-4 shrink-0 mt-0.5 text-fuchsia-300" />
+            <div className="flex-1">
+              <p className="font-bold text-fuchsia-200">Demo Mode is ON</p>
+              <p className="mt-0.5 text-fuchsia-300/90">
+                These readings are generated in this browser for presentation only. They are not real
+                sensor data and are not saved to the database. Other accounts still show zero.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={stopDemoMode}
+              className="shrink-0 px-2.5 py-1 rounded-md bg-fuchsia-500 text-white font-bold hover:bg-fuchsia-400 transition cursor-pointer"
+            >
+              Exit Demo
+            </button>
+          </div>
+        )}
         {/* Offline → Online upload status */}
         {(offlineSyncing || offlineSyncNotice) && (
           <div
@@ -5122,6 +5232,36 @@ export default function App() {
                         {smsSettings?.notify_on_low_water ? 'ACTIVE' : 'OFF'}
                       </button>
                     </div>
+
+                    {/* 7. Empty Refill Tank (no water for 5 minutes) */}
+                    <div className={`p-3 rounded-xl border flex items-center justify-between gap-3 transition ${
+                      smsSettings?.notify_on_empty_tank
+                        ? (isDark ? 'bg-rose-500/10 border-rose-500/40' : 'bg-rose-50 border-rose-200')
+                        : (isDark ? 'bg-[#030a16] border-[#163252] opacity-60' : 'bg-slate-100 border-slate-200 opacity-60')
+                    }`}>
+                      <div className="flex items-center gap-2.5">
+                        <span className="text-lg">🚱</span>
+                        <div>
+                          <div className={`text-xs font-bold ${themeTextMain}`}>
+                            Empty Refill Tank (no water for 5 minutes)
+                          </div>
+                          <div className={`text-[11px] ${themeTextMuted}`}>
+                            Sends one alert when the water sensor reads no water continuously for 5 minutes
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSmsSetting({ notify_on_empty_tank: smsSettings?.notify_on_empty_tank ? 0 : 1 })}
+                        className={`text-xs px-2.5 py-1 rounded-md font-bold cursor-pointer transition ${
+                          smsSettings?.notify_on_empty_tank
+                            ? 'bg-rose-500 text-white'
+                            : (isDark ? 'bg-[#163252] text-slate-400' : 'bg-slate-300 text-slate-600')
+                        }`}
+                      >
+                        {smsSettings?.notify_on_empty_tank ? 'ACTIVE' : 'OFF'}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -5279,6 +5419,8 @@ export default function App() {
                                 : log.event_type.includes('PH')
                                 ? 'bg-amber-500/20 text-amber-400'
                                 : log.event_type.includes('TDS')
+                                ? 'bg-rose-500/20 text-rose-400'
+                                : log.event_type === 'EMPTY_TANK'
                                 ? 'bg-rose-500/20 text-rose-400'
                                 : 'bg-emerald-500/20 text-emerald-400'
                             }`}>
