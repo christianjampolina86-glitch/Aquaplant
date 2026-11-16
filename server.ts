@@ -1829,6 +1829,26 @@ app.get('/admin.html', (req: Request, res: Response) => {
   res.sendFile(path.join(__dirname, 'public', 'admin.html'));
 });
 
+// PWA files. They live in public/ and are copied into dist/ by `vite build`.
+// Serve them with explicit headers so browsers treat the app as installable.
+function sendPwaFile(res: Response, fileName: string, contentType: string) {
+  const distFile = path.join(__dirname, 'dist', fileName);
+  const publicFile = path.join(__dirname, 'public', fileName);
+  res.type(contentType);
+  res.sendFile(fs.existsSync(distFile) ? distFile : publicFile);
+}
+
+app.get('/manifest.webmanifest', (_req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  sendPwaFile(res, 'manifest.webmanifest', 'application/manifest+json');
+});
+
+app.get('/sw.js', (_req: Request, res: Response) => {
+  res.setHeader('Service-Worker-Allowed', '/');
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+  sendPwaFile(res, 'sw.js', 'application/javascript');
+});
+
 // Development server setup
 async function startServer() {
   const isDev = process.env.NODE_ENV !== 'production';
