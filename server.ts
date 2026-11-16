@@ -1480,9 +1480,9 @@ app.get('/api/esp32/config', authenticateToken, (req: AuthenticatedRequest, res:
     pinout: {
       tds_sensor: 'GPIO 34 (ADC1_CH6, 0-3.3V Analog)',
       ph_sensor: 'GPIO 35 (ADC1_CH7, 0-3.3V Analog)',
-      temperature_sensor: 'GPIO 4 (DS18B20 OneWire, 4.7kΩ pullup)',
+      temperature_sensor: 'GPIO 13 (DHT22 ambient air temperature + humidity)',
       water_level_sensor: 'GPIO 32 (ADC1_CH4, Depth probe)',
-      humidity_sensor: 'GPIO 15 (DHT11/DHT22 Digital)',
+      humidity_sensor: 'GPIO 13 (DHT22 Digital, shared with air temperature)',
       solution_pump_relay: 'GPIO 25 (Active-LOW 5V Relay Channel 1)',
       water_pump_relay: 'GPIO 26 (Active-LOW 5V Relay Channel 2)',
       flush_pump_relay: 'GPIO 27 (Active-LOW 5V Relay Channel 3)'

@@ -1953,9 +1953,8 @@ export default function App() {
   const themeInnerBg = isDark ? 'bg-[#020710] border-[#163252]' : 'bg-slate-50 border-slate-200';
 
   // Check if we should render the dedicated Login Dashboard
-  // This triggers when the user clicks Log Out (hasExplicitlyLoggedOut) OR when there is no active token/offline session
-  // A stored session always wins over a stale "logged out" flag (for example
-  // when the user signs in from the static /login.html page).
+  // This triggers when the user clicks Log Out OR when there is no active token/offline session.
+  // A stored session always wins over a stale "logged out" flag.
   const showLoginDashboard = !token && !isOfflineMode && !guestReadOnly;
 
   // ==========================================================================
@@ -3548,7 +3547,7 @@ export default function App() {
           <div className={`${themeCardBg} rounded-2xl p-5 shadow-lg transition-all relative overflow-hidden ${isDark ? 'hover:border-[#285788]' : 'hover:border-slate-300'}`}>
             <div className="flex justify-between items-center mb-3">
               <span className={`text-xs font-bold ${themeTextMuted} flex items-center gap-1.5`}>
-                <Thermometer className="w-4 h-4 text-[#f0932b]" /> Water Temperature
+                <Thermometer className="w-4 h-4 text-[#f0932b]" /> Reservoir Air Temperature
               </span>
               <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${
                 !hasLiveTelemetry
@@ -3706,7 +3705,7 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2">
               <span className="w-3.5 h-1 rounded bg-[#f0932b] shadow-[0_0_6px_#f0932b]" />
-              <span>Temperature (°C) [Target 20-28]</span>
+              <span>Air Temperature (°C) [Target 20-28]</span>
             </div>
             <div className="flex items-center gap-2">
               <span className="w-3.5 h-1 rounded bg-[#00e676] shadow-[0_0_6px_#00e676]" />
@@ -4703,13 +4702,7 @@ export default function App() {
             )}
 
             {/* Footer Navigation */}
-            <div className={`mt-4 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'} flex items-center justify-between text-[11px] ${themeTextDim}`}>
-              <a
-                href="/login.html"
-                className={`hover:${isDark ? 'text-[#00f2fe]' : 'text-cyan-700'} transition underline underline-offset-2 flex items-center gap-1`}
-              >
-                <span>Standalone Operator Portal →</span>
-              </a>
+            <div className={`mt-4 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'} flex items-center justify-end text-[11px] ${themeTextDim}`}>
               <button
                 type="button"
                 onClick={() => setShowLoginModal(false)}
@@ -6120,10 +6113,10 @@ export default function App() {
                             <td className={`py-2 px-3 text-[11px] ${themeTextDim}`}>BNC Probe with operational amplifier</td>
                           </tr>
                           <tr>
-                            <td className={`py-2 px-3 font-sans font-medium ${themeTextMain}`}>Water Temp (DS18B20)</td>
-                            <td className="py-2 px-3 text-amber-400 font-bold">GPIO 4</td>
-                            <td className="py-2 px-3 text-slate-400">Digital OneWire</td>
-                            <td className={`py-2 px-3 text-[11px] ${themeTextDim}`}>Requires 4.7kΩ pull-up resistor to 3.3V</td>
+                            <td className={`py-2 px-3 font-sans font-medium ${themeTextMain}`}>Reservoir Air Temp (DHT22)</td>
+                            <td className="py-2 px-3 text-amber-400 font-bold">GPIO 13</td>
+                            <td className="py-2 px-3 text-slate-400">Digital</td>
+                            <td className={`py-2 px-3 text-[11px] ${themeTextDim}`}>DHT22 ambient air sensor (not water temperature)</td>
                           </tr>
                           <tr>
                             <td className={`py-2 px-3 font-sans font-medium ${themeTextMain}`}>Reservoir Water Depth</td>
@@ -6132,10 +6125,10 @@ export default function App() {
                             <td className={`py-2 px-3 text-[11px] ${themeTextDim}`}>Submersible resistance depth sensor</td>
                           </tr>
                           <tr>
-                            <td className={`py-2 px-3 font-sans font-medium ${themeTextMain}`}>Canopy Humidity (DHT)</td>
-                            <td className="py-2 px-3 text-emerald-400 font-bold">GPIO 15</td>
+                            <td className={`py-2 px-3 font-sans font-medium ${themeTextMain}`}>Ambient Humidity (DHT22)</td>
+                            <td className="py-2 px-3 text-emerald-400 font-bold">GPIO 13</td>
                             <td className="py-2 px-3 text-slate-400">Digital</td>
-                            <td className={`py-2 px-3 text-[11px] ${themeTextDim}`}>DHT11 or DHT22 digital data pin</td>
+                            <td className={`py-2 px-3 text-[11px] ${themeTextDim}`}>Shared with the DHT22 air temperature reading</td>
                           </tr>
                           <tr className="bg-cyan-500/5">
                             <td className={`py-2 px-3 font-sans font-medium ${themeTextMain}`}>Solutioned Water Pump Relay</td>
