@@ -294,6 +294,7 @@ export default function App() {
   const [testSmsStatus, setTestSmsStatus] = useState<{ success: boolean; message: string; sid?: string } | null>(null);
   const [savingSms, setSavingSms] = useState(false);
   const [smsFeedback, setSmsFeedback] = useState<string | null>(null);
+  const smsModalOpenRef = useRef(false);
   const [iprogBalance, setIprogBalance] = useState<{ load_balance?: number } | null>(null);
   const [checkingBalance, setCheckingBalance] = useState(false);
   const [balanceError, setBalanceError] = useState<string | null>(null);
@@ -1070,18 +1071,22 @@ export default function App() {
       }
 
       // SMS Settings & Outbox Logs
-      const smsRes = await fetch('/api/sms/settings', { headers });
-      if (smsRes.ok) {
-        const smsData = await smsRes.json();
-        if (smsData.settings) setSmsSettings(smsData.settings);
-        else if (smsData.phone_number !== undefined) setSmsSettings(smsData);
-      }
+      // While the SMS window is open the operator may be typing an API token
+      // or SIM number. The 4-second telemetry poll must not overwrite it.
+      if (!smsModalOpenRef.current) {
+        const smsRes = await fetch('/api/sms/settings', { headers });
+        if (smsRes.ok && !smsModalOpenRef.current) {
+          const smsData = await smsRes.json();
+          if (smsData.settings) setSmsSettings(smsData.settings);
+          else if (smsData.phone_number !== undefined) setSmsSettings(smsData);
+        }
 
-      const smsLogsRes = await fetch('/api/sms/logs?limit=30', { headers });
-      if (smsLogsRes.ok) {
-        const smsLogsData = await smsLogsRes.json();
-        if (smsLogsData.logs) setSmsLogs(smsLogsData.logs);
-        else if (smsLogsData.length !== undefined) setSmsLogs(smsLogsData);
+        const smsLogsRes = await fetch('/api/sms/logs?limit=30', { headers });
+        if (smsLogsRes.ok && !smsModalOpenRef.current) {
+          const smsLogsData = await smsLogsRes.json();
+          if (smsLogsData.logs) setSmsLogs(smsLogsData.logs);
+          else if (smsLogsData.length !== undefined) setSmsLogs(smsLogsData);
+        }
       }
 
       // Cloud Database Status
@@ -1489,6 +1494,12 @@ export default function App() {
     const interval = setInterval(fetchAllData, 4000);
     return () => clearInterval(interval);
   }, [token, timeRange, logFilter, guestReadOnly]);
+
+  // Pause the background poll for SMS fields while the SMS window is open so
+  // typing a SIM number or API token cannot be overwritten mid-edit.
+  useEffect(() => {
+    smsModalOpenRef.current = showSmsModal;
+  }, [showSmsModal]);
 
   // Load firmware preview on modal open
   useEffect(() => {
