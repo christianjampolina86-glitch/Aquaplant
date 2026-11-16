@@ -102,6 +102,13 @@ interface ControlStates {
   refill_valve?: number;
 }
 
+// Chrome/Edge/Android fire this when the site can be installed. iOS Safari
+// does not support it, so iPhone users install via Share > Add to Home Screen.
+interface BeforeInstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform?: string }>;
+}
+
 interface SystemLog {
   id: number;
   message: string;
@@ -262,6 +269,21 @@ export default function App() {
   const [demoMode, setDemoMode] = useState(false);
   const demoModeRef = useRef(false);
   const demoStepRef = useRef(0);
+
+  // Installable-app prompt (Android / desktop Chrome). iOS uses the browser's
+  // Share > Add to Home Screen menu instead.
+  const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [showIosInstallHelp, setShowIosInstallHelp] = useState(false);
+  const [isIosDevice] = useState(() => {
+    if (typeof navigator === 'undefined') return false;
+    const ua = navigator.userAgent || '';
+    return /iphone|ipad|ipod/i.test(ua) || (/Macintosh/i.test(ua) && (navigator.maxTouchPoints || 0) > 1);
+  });
+  const [isInstalledApp] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    const standalone = window.matchMedia?.('(display-mode: standalone)').matches;
+    return !!standalone || (navigator as unknown as { standalone?: boolean }).standalone === true;
+  });
 
   useEffect(() => {
     latestReadingRef.current = latestReading;
@@ -1162,6 +1184,29 @@ export default function App() {
     fetchAllData();
   };
 
+  // Show the browser's native "Install app" dialog.
+  const handleInstallApp = async () => {
+    if (!installPrompt) return;
+    try {
+      await installPrompt.prompt();
+      await installPrompt.userChoice;
+    } catch {
+      // ignore: some browsers do not allow a second prompt
+    } finally {
+      // Each prompt event can only be used once; the browser can send a new one.
+      setInstallPrompt(null);
+    }
+  };
+
+  const handleInstallClick = () => {
+    if (installPrompt) {
+      handleInstallApp();
+      return;
+    }
+    // iOS Safari has no install prompt; show the Share menu instructions.
+    setShowIosInstallHelp(true);
+  };
+
   // SMS Settings Update Handler
   const handleSaveSmsSetting = async (updates: Partial<SmsAlertSetting>) => {
     if (!smsSettings) return;
@@ -1575,6 +1620,21 @@ export default function App() {
   useEffect(() => {
     smsModalOpenRef.current = showSmsModal;
   }, [showSmsModal]);
+
+  // Capture the browser's install prompt so we can show an "Install App" button.
+  useEffect(() => {
+    const onBeforeInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as BeforeInstallPromptEvent);
+    };
+    const onInstalled = () => setInstallPrompt(null);
+    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+    window.addEventListener('appinstalled', onInstalled);
+    return () => {
+      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', onInstalled);
+    };
+  }, []);
 
   // Load firmware preview on modal open
   useEffect(() => {
@@ -3271,6 +3331,19 @@ export default function App() {
               {clockString || '--:--:--'}
             </div>
 
+            {/* Install as an app (Android prompt, or iPhone instructions) */}
+            {!isInstalledApp && (installPrompt || isIosDevice) && (
+              <button
+                type="button"
+                onClick={handleInstallClick}
+                className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 active:scale-95 transition cursor-pointer"
+                title="Install AQUAPLANT as an app on this device"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Install App</span>
+              </button>
+            )}
+
             {/* One-Click Demo: shows demo values in this browser only */}
             <button
               type="button"
@@ -3428,6 +3501,29 @@ export default function App() {
 
         {/* Main Full-Width Desktop Web Workspace */}
         <main className="max-w-[1560px] w-full mx-auto p-4 sm:p-6 flex-1 flex flex-col gap-6">
+        {/* iPhone / iPad install instructions */}
+        {showIosInstallHelp && (
+          <div className="rounded-xl border px-4 py-3 text-xs flex items-start gap-2.5 shadow-sm bg-amber-500/10 border-amber-500/40 text-amber-200">
+            <Smartphone className="w-4 h-4 shrink-0 mt-0.5 text-amber-300" />
+            <div className="flex-1">
+              <p className="font-bold text-amber-200">Install AQUAPLANT on this iPhone / iPad</p>
+              <p className="mt-0.5 text-amber-200/90 leading-relaxed">
+                Tap the <strong>Share</strong> button in Safari (the square with an arrow pointing up),
+                scroll down, and choose <strong>Add to Home Screen</strong>. The AQUAPLANT icon will
+                appear on your home screen and open full-screen.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowIosInstallHelp(false)}
+              className="shrink-0 p-1 rounded-md text-amber-300 hover:bg-amber-500/20 transition cursor-pointer"
+              title="Dismiss"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Demo mode banner: makes it obvious these numbers are not real */}
         {demoMode && (
           <div className="rounded-xl border px-4 py-3 text-xs flex items-start gap-2.5 shadow-sm bg-fuchsia-500/10 border-fuchsia-500/40 text-fuchsia-200">

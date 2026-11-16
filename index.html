@@ -2,13 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>AQUAPLANT - Automated Hydroponic Monitoring & Control Web App</title>
     <meta name="description" content="ESP32-based automated hydroponic reservoir flushing and nutrient re-balancing system using TDS/pH feedback with real-time telemetry, relay controls, and hardware diagnostics." />
     <meta property="og:title" content="AQUAPLANT - Automated Hydroponic Monitoring & Control Web App" />
     <meta property="og:description" content="ESP32-based automated hydroponic reservoir flushing and nutrient re-balancing system using TDS/pH feedback." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+
+    <!-- Installable app (PWA) -->
+    <meta name="theme-color" content="#061222" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="AQUAPLANT" />
+
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌱</text></svg>">
     <script>
       (function() {

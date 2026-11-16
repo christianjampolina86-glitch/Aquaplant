@@ -11,3 +11,13 @@ import './index.css';
 
 // Mount the AQUAPLANT Web Application to the DOM container
 createRoot(document.getElementById('root')!).render(<App />);
+
+// Register the service worker that makes the installed app open fast and
+// survive short network drops. Live API calls are never cached.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch((error) => {
+      console.warn('[AQUAPLANT] Service worker registration failed:', error);
+    });
+  });
+}
