@@ -19,3 +19,41 @@ html:not(.dark) {
 body {
   transition: background-color 0.2s ease, color 0.2s ease;
 }
+
+/* ---------------------------------------------------------------------------
+   Mobile / installed-app ergonomics
+   --------------------------------------------------------------------------- */
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overflow-x: hidden;
+}
+
+/* Remove the grey flash when tapping buttons on Android/iOS. */
+button,
+a,
+[role="button"] {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+/* iOS Safari zooms the whole page in when an input smaller than 16px gets
+   focus. Keeping form controls at 16px on phones prevents that jump. */
+@media (max-width: 640px) {
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* Respect the notch / home indicator when the app runs full-screen (PWA). */
+@supports (padding: env(safe-area-inset-left)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}

@@ -80,6 +80,37 @@ import {
  * 7. Capstone Defense Hub: Embedded view & 1-click download of Arduino firmware & MySQL schema.
  */
 
+/**
+ * Session marker helpers.
+ *
+ * The operator/admin login must always be the first thing shown when the app is
+ * launched (phone or desktop). We keep the saved token in localStorage so a
+ * page refresh inside the same tab does not throw the operator out, but a cold
+ * start (reopening the installed app, a new tab, or a browser restart) has no
+ * sessionStorage marker and therefore falls back to the login screen.
+ */
+const SESSION_MARKER_KEY = 'aquaplant_session_started';
+
+function markSessionStarted() {
+  try {
+    sessionStorage.setItem(SESSION_MARKER_KEY, '1');
+  } catch {}
+}
+
+function clearSessionMarker() {
+  try {
+    sessionStorage.removeItem(SESSION_MARKER_KEY);
+  } catch {}
+}
+
+function hasSessionMarker(): boolean {
+  try {
+    return sessionStorage.getItem(SESSION_MARKER_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 interface SensorReading {
   id: number;
   tds: number;
@@ -231,15 +262,30 @@ function clearOfflineQueues() {
 }
 
 export default function App() {
-  // Authentication & Session state (defaults to authorized operator in preview)
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('aquaplant_auth_token'));
+  // Authentication & Session state.
+  // A cold launch always starts signed out so the login screen is the first
+  // thing an operator or administrator sees.
+  const [token, setToken] = useState<string | null>(() => {
+    try {
+      const stored = localStorage.getItem('aquaplant_auth_token');
+      const storedUser = localStorage.getItem('aquaplant_auth_user');
+      if (stored && (!hasSessionMarker() || !storedUser)) {
+        localStorage.removeItem('aquaplant_auth_token');
+        localStorage.removeItem('aquaplant_auth_user');
+        return null;
+      }
+      return stored;
+    } catch {
+      return null;
+    }
+  });
 
   const [user, setUser] = useState<{ username: string; role: string } | null>(() => {
     try {
       const u = localStorage.getItem('aquaplant_auth_user');
-      return u ? JSON.parse(u) : { username: 'Operator', role: 'admin' };
+      return u ? JSON.parse(u) : null;
     } catch {
-      return { username: 'Operator', role: 'admin' };
+      return null;
     }
   });
 
@@ -593,6 +639,7 @@ export default function App() {
         setToken('firebase-' + currentUser.uid);
         localStorage.setItem('aquaplant_auth_token', 'firebase-' + currentUser.uid);
         localStorage.setItem('aquaplant_auth_user', JSON.stringify(u));
+        markSessionStarted();
         setHasExplicitlyLoggedOut(false);
       }
     });
@@ -610,6 +657,17 @@ export default function App() {
     const interval = setInterval(updateTime, 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Lock background scrolling while the mobile drawer is open so a swipe
+  // scrolls the menu instead of the dashboard behind it.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [sidebarOpen]);
 
   // Network connectivity listener for instant offline mode detection
   useEffect(() => {
@@ -658,6 +716,7 @@ export default function App() {
     localStorage.removeItem('aquaplant_auth_user');
     localStorage.removeItem('aquaplant_offline_mode');
     localStorage.setItem('aquaplant_explicit_logout', 'true');
+    clearSessionMarker();
     setHasExplicitlyLoggedOut(true);
     setShowLoginModal(false);
     setLoginError('');
@@ -687,6 +746,7 @@ export default function App() {
     localStorage.removeItem('aquaplant_offline_mode');
     localStorage.setItem('aquaplant_mode_chosen', 'true');
     setIsFirstVisit(false);
+    markSessionStarted();
     localStorage.removeItem('aquaplant_explicit_logout');
     setHasExplicitlyLoggedOut(false);
     setGuestReadOnly(false);
@@ -792,6 +852,7 @@ export default function App() {
     localStorage.removeItem('aquaplant_offline_mode');
     localStorage.removeItem('aquaplant_auth_token');
     localStorage.removeItem('aquaplant_auth_user');
+    clearSessionMarker();
     // Blocks the automatic demo sign-in so the login form really appears.
     localStorage.setItem('aquaplant_explicit_logout', 'true');
     setHasExplicitlyLoggedOut(true);
@@ -848,6 +909,7 @@ export default function App() {
       localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
       localStorage.setItem('aquaplant_mode_chosen', 'true');
       setIsFirstVisit(false);
+      markSessionStarted();
       localStorage.removeItem('aquaplant_explicit_logout');
       setHasExplicitlyLoggedOut(false);
       setGuestReadOnly(false);
@@ -919,6 +981,7 @@ export default function App() {
       localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
       localStorage.setItem('aquaplant_mode_chosen', 'true');
       setIsFirstVisit(false);
+      markSessionStarted();
       localStorage.removeItem('aquaplant_explicit_logout');
       setHasExplicitlyLoggedOut(false);
       setGuestReadOnly(false);
@@ -2582,7 +2645,7 @@ export default function App() {
 
   if (showLoginDashboard) {
     return (
-      <div className={`min-h-screen ${isDark ? 'bg-[#030a16] text-[#f0f6fc]' : 'bg-[#f4f7fb] text-slate-800'} flex flex-col justify-between font-sans transition-colors duration-200 selection:bg-[#00f2fe] selection:text-[#030a16]`}>
+      <div className={`min-h-[100dvh] ${isDark ? 'bg-[#030a16] text-[#f0f6fc]' : 'bg-[#f4f7fb] text-slate-800'} flex flex-col justify-between font-sans transition-colors duration-200 selection:bg-[#00f2fe] selection:text-[#030a16]`}>
         {/* Navigation & Status Header */}
         <header className={`px-4 sm:px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 border-b ${
           isDark ? 'border-[#163252] bg-[#061222]/90' : 'border-slate-200 bg-white/90'
@@ -2614,10 +2677,11 @@ export default function App() {
             <button
               type="button"
               onClick={toggleTheme}
-              className={`p-2 rounded-xl border transition cursor-pointer ${
+              className={`w-11 h-11 flex items-center justify-center rounded-xl border transition cursor-pointer ${
                 isDark ? 'border-[#163252] bg-[#061222] text-amber-400 hover:text-white' : 'border-slate-300 bg-white text-slate-600 hover:text-slate-900 shadow-sm'
               }`}
               title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+              aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
             >
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
@@ -2937,10 +3001,10 @@ export default function App() {
           MENU SIDEBAR (Fixed/Sticky on Desktop, Slide-over on Mobile)
          ========================================================================= */}
       <aside
-        className={`fixed lg:sticky top-0 h-screen z-50 flex flex-col justify-between border-r transition-all duration-200 shrink-0 ${
+        className={`fixed lg:sticky top-0 h-[100dvh] z-50 flex flex-col justify-between border-r transition-all duration-200 shrink-0 overscroll-contain ${
           isDark ? 'bg-[#061222] border-[#163252]' : 'bg-white border-slate-200 shadow-sm'
         } ${
-          sidebarOpen ? 'translate-x-0 w-64' : '-translate-x-full lg:translate-x-0'
+          sidebarOpen ? 'translate-x-0 w-[86vw] max-w-[320px]' : '-translate-x-full lg:translate-x-0'
         } ${
           sidebarCollapsed ? 'lg:w-[72px]' : 'lg:w-64'
         }`}
@@ -2973,8 +3037,9 @@ export default function App() {
             <button
               type="button"
               onClick={() => setSidebarOpen(false)}
-              className="p-1 rounded text-slate-400 hover:text-white lg:hidden cursor-pointer"
+              className="w-11 h-11 -mr-1 flex items-center justify-center rounded-lg text-slate-400 hover:text-white lg:hidden cursor-pointer"
               title="Close menu"
+              aria-label="Close navigation menu"
             >
               <X className="w-5 h-5" />
             </button>
@@ -2990,7 +3055,7 @@ export default function App() {
         </div>
 
         {/* Middle: Scrollable Navigation Menu Groups */}
-        <div className="flex-1 overflow-y-auto px-3 py-4 space-y-6">
+        <div className="flex-1 overflow-y-auto overscroll-contain px-3 py-4 space-y-6">
           {/* Group 1: Monitoring & Real-time Telemetry */}
           <div>
             {!sidebarCollapsed && (
@@ -3002,7 +3067,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => scrollToSection('overview')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   activeSection === 'overview'
                     ? (isDark ? 'bg-[#00f2fe]/10 text-[#00f2fe] border border-[#00f2fe]/30 font-bold' : 'bg-cyan-50 text-cyan-900 border border-cyan-200 font-bold')
                     : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
@@ -3016,7 +3081,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => scrollToSection('telemetry')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   activeSection === 'telemetry'
                     ? (isDark ? 'bg-[#00f2fe]/10 text-[#00f2fe] border border-[#00f2fe]/30 font-bold' : 'bg-cyan-50 text-cyan-900 border border-cyan-200 font-bold')
                     : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
@@ -3030,7 +3095,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => scrollToSection('actuators')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   activeSection === 'actuators'
                     ? (isDark ? 'bg-[#00f2fe]/10 text-[#00f2fe] border border-[#00f2fe]/30 font-bold' : 'bg-cyan-50 text-cyan-900 border border-cyan-200 font-bold')
                     : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
@@ -3044,7 +3109,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => scrollToSection('audit-logs')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   activeSection === 'audit-logs'
                     ? (isDark ? 'bg-[#00f2fe]/10 text-[#00f2fe] border border-[#00f2fe]/30 font-bold' : 'bg-cyan-50 text-cyan-900 border border-cyan-200 font-bold')
                     : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
@@ -3072,7 +3137,7 @@ export default function App() {
                   if (smsSettings?.iprog_api_key) fetchIprogBalance(smsSettings.iprog_api_key);
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
                 title="SMS Carrier Alert Gateway"
@@ -3095,7 +3160,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => toggleActuator('auto_mode', controls.auto_mode ? 0 : 1)}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
                 title="Toggle Autonomous Closed-Loop Feedback"
@@ -3118,7 +3183,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={triggerManualFlush}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 transition cursor-pointer"
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold text-rose-400 hover:bg-rose-500/10 hover:text-rose-300 transition cursor-pointer"
                 title="Trigger Emergency 3-Pump Flush Sequence"
               >
                 <ShieldAlert className="w-4 h-4 shrink-0" />
@@ -3142,7 +3207,7 @@ export default function App() {
                     setSidebarOpen(false);
                     handleInstallClick();
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                     isDark ? 'text-emerald-300 hover:bg-[#0d223a]' : 'text-emerald-700 hover:bg-emerald-50'
                   }`}
                   title="Install AQUAPLANT as an app on this device"
@@ -3159,7 +3224,7 @@ export default function App() {
                   else startDemoMode();
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   demoMode
                     ? 'text-fuchsia-300 bg-fuchsia-500/10'
                     : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
@@ -3190,7 +3255,7 @@ export default function App() {
                     handleSwitchToOnlineMode();
                     setSidebarOpen(false);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                     isDark ? 'text-amber-300 hover:bg-[#0d223a]' : 'text-amber-700 hover:bg-amber-50'
                   }`}
                   title="Reconnect to the cloud server and sign in"
@@ -3212,7 +3277,7 @@ export default function App() {
                     handleEnterOfflineMode();
                     setSidebarOpen(false);
                   }}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                     isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                   title="Switch the station to offline field mode (no internet)"
@@ -3239,7 +3304,7 @@ export default function App() {
                   fetchEsp32Config();
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
                 title="Connect & Provision ESP32 Microcontroller"
@@ -3263,7 +3328,7 @@ export default function App() {
                   setShowWifiSetupPage(true);
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   showWifiSetupPage
                     ? (isDark ? 'bg-[#00f2fe]/10 text-[#00f2fe] border border-[#00f2fe]/30 font-bold' : 'bg-cyan-50 text-cyan-900 border border-cyan-200 font-bold')
                     : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
@@ -3289,7 +3354,7 @@ export default function App() {
                   setShowSimulator(true);
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
                 title="Station Diagnostics & Sensor Calibration"
@@ -3304,7 +3369,7 @@ export default function App() {
                   setShowFirmwareModal(true);
                   setSidebarOpen(false);
                 }}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
                 title="View ESP32 Microcontroller Firmware"
@@ -3316,7 +3381,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleExportExcel}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                   isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                 }`}
                 title="Export Historical Telemetry to Excel (.xlsx)"
@@ -3342,7 +3407,7 @@ export default function App() {
                     setShowUserAdmin(true);
                     setSidebarOpen(false);
                   }}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
                     isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
                   }`}
                   title="Authorize operator accounts and see who is online"
@@ -3363,7 +3428,7 @@ export default function App() {
         </div>
 
         {/* Bottom: Hardware Status & Operator Profile */}
-        <div className={`p-3 border-t space-y-3 ${isDark ? 'border-[#163252] bg-[#040e1b]' : 'border-slate-200 bg-slate-50'}`}>
+        <div className={`px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] border-t space-y-3 ${isDark ? 'border-[#163252] bg-[#040e1b]' : 'border-slate-200 bg-slate-50'}`}>
           {/* Hardware Heartbeat */}
           <button
             type="button"
@@ -3412,18 +3477,20 @@ export default function App() {
                   <button
                     type="button"
                     onClick={toggleTheme}
-                    className="p-1.5 rounded-lg text-slate-400 hover:text-white cursor-pointer"
+                    className="w-10 h-10 lg:w-8 lg:h-8 flex items-center justify-center rounded-lg text-slate-400 hover:text-white cursor-pointer"
                     title={isDark ? "Switch to Light Mode" : "Switch to Dark Mode"}
+                    aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
                   >
-                    {isDark ? <Sun className="w-3.5 h-3.5 text-amber-400" /> : <Moon className="w-3.5 h-3.5 text-slate-600" />}
+                    {isDark ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-slate-600" />}
                   </button>
                   <button
                     type="button"
                     onClick={handleLogout}
-                    className="p-1.5 rounded-lg text-rose-400 hover:bg-rose-500/20 cursor-pointer"
+                    className="w-10 h-10 lg:w-8 lg:h-8 flex items-center justify-center rounded-lg text-rose-400 hover:bg-rose-500/20 cursor-pointer"
                     title="Log Out"
+                    aria-label="Log out"
                   >
-                    <LogOut className="w-3.5 h-3.5" />
+                    <LogOut className="w-4 h-4" />
                   </button>
                 </div>
               </div>
@@ -3446,16 +3513,19 @@ export default function App() {
          ========================================================================= */}
       <div className="flex-1 flex flex-col min-w-0 min-h-screen overflow-x-hidden">
         {/* Slim Top Navigation Bar */}
-        <header className={`border-b ${isDark ? 'border-[#163252] bg-[#061222]/90' : 'border-slate-200 bg-white/95 shadow-sm'} px-4 sm:px-6 py-3 sticky top-0 z-30 backdrop-blur-md flex items-center justify-between gap-4 transition-colors`}>
-          <div className="flex items-center gap-3">
+        <header className={`border-b ${isDark ? 'border-[#163252] bg-[#061222]/90' : 'border-slate-200 bg-white/95 shadow-sm'} px-3 sm:px-6 pb-2.5 sm:pb-3 pt-[max(0.625rem,env(safe-area-inset-top))] sticky top-0 z-30 backdrop-blur-md flex items-center justify-between gap-3 transition-colors`}>
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             {/* Hamburger Button for Mobile */}
             <button
               type="button"
               onClick={() => setSidebarOpen(true)}
-              className="p-2 rounded-lg text-slate-400 hover:text-white lg:hidden cursor-pointer"
+              className={`w-11 h-11 -ml-1 flex items-center justify-center rounded-lg lg:hidden cursor-pointer ${
+                isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+              }`}
               title="Open Navigation Menu"
+              aria-label="Open navigation menu"
             >
-              <Menu className="w-5 h-5" />
+              <Menu className="w-6 h-6" />
             </button>
 
             {/* Brand Logo Lockup (matches the sidebar) */}
@@ -3489,8 +3559,50 @@ export default function App() {
           </div>
         </header>
 
+        {/* Mobile bottom shortcut bar: keeps the main pages one tap away on a phone */}
+        <nav
+          className={`lg:hidden fixed bottom-0 inset-x-0 z-30 border-t backdrop-blur-md pb-[env(safe-area-inset-bottom)] ${
+            isDark ? 'bg-[#061222]/95 border-[#163252]' : 'bg-white/95 border-slate-200 shadow-[0_-4px_16px_rgba(15,23,42,0.08)]'
+          }`}
+          aria-label="Primary navigation"
+        >
+          <div className="grid grid-cols-4">
+            {([
+              { id: 'overview' as const, label: 'Overview', Icon: LayoutDashboard },
+              { id: 'telemetry' as const, label: 'Telemetry', Icon: Activity },
+              { id: 'actuators' as const, label: 'Pumps', Icon: Sliders }
+            ]).map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => scrollToSection(id)}
+                className={`flex flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-bold transition cursor-pointer ${
+                  activeSection === id
+                    ? (isDark ? 'text-[#00f2fe]' : 'text-cyan-700')
+                    : (isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900')
+                }`}
+                aria-current={activeSection === id ? 'page' : undefined}
+              >
+                <Icon className="w-5 h-5" />
+                <span>{label}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className={`flex flex-col items-center justify-center gap-1 py-2.5 text-[11px] font-bold transition cursor-pointer ${
+                isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900'
+              }`}
+              aria-label="Open the full menu"
+            >
+              <Menu className="w-5 h-5" />
+              <span>Menu</span>
+            </button>
+          </div>
+        </nav>
+
         {/* Main Full-Width Desktop Web Workspace */}
-        <main className="max-w-[1560px] w-full mx-auto p-4 sm:p-6 flex-1 flex flex-col gap-6">
+        <main className="max-w-[1560px] w-full mx-auto px-4 sm:px-6 pt-4 sm:pt-6 pb-24 lg:pb-6 flex-1 flex flex-col gap-6">
         {/* iPhone / iPad install instructions */}
         {showIosInstallHelp && (
           <div className="rounded-xl border px-4 py-3 text-xs flex items-start gap-2.5 shadow-sm bg-amber-500/10 border-amber-500/40 text-amber-200">
@@ -4137,8 +4249,8 @@ export default function App() {
             </div>
           </div>
 
-          <div className={`max-h-[320px] overflow-y-auto rounded-xl border ${isDark ? 'border-[#163252] bg-[#020710]' : 'border-slate-200 bg-white shadow-sm'}`}>
-            <table className="w-full text-left text-xs border-collapse">
+          <div className={`max-h-[320px] overflow-y-auto overflow-x-auto rounded-xl border ${isDark ? 'border-[#163252] bg-[#020710]' : 'border-slate-200 bg-white shadow-sm'}`}>
+            <table className="w-full min-w-[480px] text-left text-xs border-collapse">
               <thead className={`sticky top-0 ${isDark ? 'bg-[#081628] border-b border-[#163252] text-[#8ca2ba]' : 'bg-slate-100 border-b border-slate-200 text-slate-700'} uppercase text-[10px] tracking-wider font-bold`}>
                 <tr>
                   <th className="py-2.5 px-4 w-44">Timestamp</th>
@@ -4187,7 +4299,7 @@ export default function App() {
       </main>
 
       {/* Operational Dashboard Footer */}
-      <footer className={`border-t ${isDark ? 'border-[#163252] bg-[#020710] text-[#55708e]' : 'border-slate-200 bg-white text-slate-500'} py-4 px-6 text-xs flex flex-wrap items-center justify-between gap-3 max-w-[1560px] w-full mx-auto transition-colors duration-200`}>
+      <footer className={`border-t ${isDark ? 'border-[#163252] bg-[#020710] text-[#55708e]' : 'border-slate-200 bg-white text-slate-500'} pt-4 pb-24 lg:pb-4 px-4 sm:px-6 text-xs flex flex-wrap items-center justify-between gap-3 max-w-[1560px] w-full mx-auto transition-colors duration-200`}>
         <div className="flex items-center gap-2">
           🌱 <strong>AQUAPLANT Systems</strong>
           <span className={isDark ? 'text-[#163252]' : 'text-slate-300'}>|</span>
@@ -6497,7 +6609,7 @@ const char* DEVICE_KEY    = "${esp32Config?.device_key || 'aquaplant_esp32_devic
                     setShowConnectModal(false);
                     if (serialConnected) handleDisconnectUsbSerial();
                   }}
-                  className={`px-4 py-2 rounded-lg text-xs font-semibold border transition cursor-pointer ${
+                  className={`px-4 py-2.5 rounded-lg text-[13px] font-semibold border transition cursor-pointer ${
                     isDark ? 'border-slate-700 text-slate-300 hover:text-white' : 'border-slate-300 text-slate-700 hover:text-slate-900'
                   }`}
                 >

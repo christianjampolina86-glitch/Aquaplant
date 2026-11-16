@@ -10,7 +10,7 @@
  *  - Pages use network-first, so a new deployment is picked up immediately.
  *  - Only static files (icons, built CSS/JS) are cached for offline loading.
  */
-const CACHE_NAME = 'aquaplant-shell-v3';
+const CACHE_NAME = 'aquaplant-shell-v4';
 const PRECACHE = [
   '/',
   '/manifest.webmanifest',
