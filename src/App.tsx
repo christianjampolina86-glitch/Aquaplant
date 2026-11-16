@@ -49,7 +49,6 @@ import {
   UserCheck,
   UserX,
   WifiOff,
-  Play,
   Square,
   FlaskConical
 } from 'lucide-react';
@@ -516,18 +515,13 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState('');
   const [loginLoading, setLoginLoading] = useState(false);
   const [authScreen, setAuthScreen] = useState<'login' | 'register'>('login');
+  const [loginRole, setLoginRole] = useState<'operator' | 'admin'>('operator');
   const [regUsername, setRegUsername] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regConfirm, setRegConfirm] = useState('');
   const [regLoading, setRegLoading] = useState(false);
-  const [isOfflineMode, setIsOfflineMode] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem('aquaplant_offline_mode') === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [isOfflineMode, setIsOfflineMode] = useState<boolean>(false);
   const [isBrowserOnline, setIsBrowserOnline] = useState<boolean>(() => {
     return typeof navigator !== 'undefined' ? navigator.onLine : true;
   });
@@ -667,8 +661,9 @@ export default function App() {
     setHasExplicitlyLoggedOut(true);
     setShowLoginModal(false);
     setLoginError('');
-    // Always return to the sign-in form (never the Wi-Fi gateway)
+    // Always return to the operator sign-in form (never the Wi-Fi gateway)
     setAuthScreen('login');
+    setLoginRole('operator');
     setAuthNotice('');
     setLoginUsername('');
     setLoginPassword('');
@@ -686,9 +681,10 @@ export default function App() {
     setIsOfflineMode(true);
     setToken(offlineToken);
     setUser(offlineUser);
-    localStorage.setItem('aquaplant_offline_mode', 'true');
-    localStorage.setItem('aquaplant_auth_token', offlineToken);
-    localStorage.setItem('aquaplant_auth_user', JSON.stringify(offlineUser));
+    // Offline field mode lasts for this session only. Reloading or reopening the
+    // app always returns to the login screen, so operator/admin sign-in is never
+    // skipped by a leftover offline session.
+    localStorage.removeItem('aquaplant_offline_mode');
     localStorage.setItem('aquaplant_mode_chosen', 'true');
     setIsFirstVisit(false);
     localStorage.removeItem('aquaplant_explicit_logout');
@@ -2663,6 +2659,70 @@ export default function App() {
                 </p>
               </div>
 
+              {/* Role selector: operator or administrator */}
+              <div className={`grid grid-cols-2 gap-2 mb-5 p-1 rounded-xl border ${isDark ? 'bg-[#020710] border-[#163252]' : 'bg-slate-100 border-slate-200'}`}>
+                <button
+                  type="button"
+                  onClick={() => { setLoginRole('operator'); setLoginError(''); }}
+                  className={`flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    loginRole === 'operator'
+                      ? 'bg-[#00f2fe] text-[#030a16] shadow-sm'
+                      : (isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900')
+                  }`}
+                >
+                  <Users className="w-3.5 h-3.5" />
+                  <span>Operator</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setLoginRole('admin'); setLoginError(''); }}
+                  className={`flex items-center justify-center gap-1.5 py-2 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    loginRole === 'admin'
+                      ? 'bg-purple-500 text-white shadow-sm'
+                      : (isDark ? 'text-slate-400 hover:text-white' : 'text-slate-500 hover:text-slate-900')
+                  }`}
+                >
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                  <span>Administrator</span>
+                </button>
+              </div>
+
+              {loginRole === 'admin' ? (
+                <div className="space-y-4">
+                  <div className={`p-4 rounded-xl border ${isDark ? 'bg-purple-500/10 border-purple-500/40' : 'bg-purple-50 border-purple-200'}`}>
+                    <div className="flex items-center gap-2 mb-1.5">
+                      <ShieldAlert className={`w-4 h-4 ${isDark ? 'text-purple-300' : 'text-purple-700'}`} />
+                      <h2 className={`text-sm font-bold ${isDark ? 'text-purple-200' : 'text-purple-900'}`}>
+                        Administrator Sign In
+                      </h2>
+                    </div>
+                    <p className={`text-xs leading-relaxed ${isDark ? 'text-purple-200/80' : 'text-purple-800'}`}>
+                      Administrators approve operator accounts, manage users, and see who is online.
+                      Sign in or register an administrator on the dedicated Administrator Portal.
+                    </p>
+                  </div>
+
+                  <a
+                    href="/admin.html"
+                    className="w-full py-3 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-500 to-fuchsia-500 text-white hover:opacity-90 transition inline-flex items-center justify-center gap-2 shadow-md"
+                  >
+                    🛡️ Open Administrator Portal
+                  </a>
+
+                  <button
+                    type="button"
+                    onClick={() => setLoginRole('operator')}
+                    className={`w-full py-2.5 rounded-xl text-xs font-bold border transition cursor-pointer ${
+                      isDark
+                        ? 'border-[#163252] bg-[#030a16] text-slate-300 hover:text-white'
+                        : 'border-slate-300 bg-slate-50 text-slate-700 hover:text-slate-900'
+                    }`}
+                  >
+                    ← Back to Operator Sign In
+                  </button>
+                </div>
+              ) : (
+                <>
               {loginError && (
                 <div className="mb-4 p-3 rounded-xl bg-rose-500/15 border border-rose-500/40 text-rose-400 text-xs flex items-center gap-2">
                   <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -2850,20 +2910,8 @@ export default function App() {
                   <span>View Dashboard as Guest (Read-Only)</span>
                 </button>
               </div>
-
-              {/* Separate Administrator Portal */}
-              <div className="pt-4 mt-4 border-t border-slate-700/30">
-                <a
-                  href="/admin.html"
-                  className={`w-full py-2 rounded-xl text-xs font-bold border transition inline-flex items-center justify-center gap-1.5 ${
-                    isDark
-                      ? 'border-purple-500/40 bg-purple-500/10 text-purple-300 hover:bg-purple-500/20'
-                      : 'border-purple-300 bg-purple-50 text-purple-700 hover:bg-purple-100'
-                  }`}
-                >
-                  🛡️ Administrator Login / Register
-                </a>
-              </div>
+                </>
+              )}
             </div>
           </main>
 
@@ -3079,7 +3127,104 @@ export default function App() {
             </nav>
           </div>
 
-          {/* Group 3: Diagnostics & Station Tools */}
+          {/* Group 3: App & Session (moved from the top bar) */}
+          <div>
+            {!sidebarCollapsed && (
+              <div className={`text-[10px] font-mono font-bold uppercase tracking-wider px-3 mb-2 ${themeTextDim}`}>
+                App &amp; Session
+              </div>
+            )}
+            <nav className="space-y-1">
+              {!isInstalledApp && (installPrompt || isIosDevice) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSidebarOpen(false);
+                    handleInstallClick();
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                    isDark ? 'text-emerald-300 hover:bg-[#0d223a]' : 'text-emerald-700 hover:bg-emerald-50'
+                  }`}
+                  title="Install AQUAPLANT as an app on this device"
+                >
+                  <Download className="w-4 h-4 shrink-0" />
+                  {!sidebarCollapsed && <span className="truncate">Install App</span>}
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (demoMode) stopDemoMode();
+                  else startDemoMode();
+                  setSidebarOpen(false);
+                }}
+                className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                  demoMode
+                    ? 'text-fuchsia-300 bg-fuchsia-500/10'
+                    : (isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900')
+                }`}
+                title={demoMode ? 'Stop the demo and return to real (zero) readings' : 'Show demo telemetry in this browser only — nothing is saved to the database'}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  {demoMode ? (
+                    <Square className="w-4 h-4 shrink-0 text-fuchsia-400" />
+                  ) : (
+                    <FlaskConical className="w-4 h-4 shrink-0 text-fuchsia-400" />
+                  )}
+                  {!sidebarCollapsed && <span className="truncate">{demoMode ? 'Exit Demo' : '1-Click Demo'}</span>}
+                </div>
+                {!sidebarCollapsed && (
+                  <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded font-bold ${
+                    demoMode ? 'bg-fuchsia-500/20 text-fuchsia-300' : 'bg-slate-800 text-slate-400'
+                  }`}>
+                    {demoMode ? 'ON' : 'DEMO'}
+                  </span>
+                )}
+              </button>
+
+              {isOfflineMode ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleSwitchToOnlineMode();
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                    isDark ? 'text-amber-300 hover:bg-[#0d223a]' : 'text-amber-700 hover:bg-amber-50'
+                  }`}
+                  title="Reconnect to the cloud server and sign in"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <Wifi className="w-4 h-4 shrink-0 text-amber-400" />
+                    {!sidebarCollapsed && <span className="truncate">Go Online</span>}
+                  </div>
+                  {!sidebarCollapsed && (
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded font-bold bg-amber-500/20 text-amber-400">
+                      {offlineQueuedCount > 0 ? `${offlineQueuedCount} Q` : 'OFFLINE'}
+                    </span>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    handleEnterOfflineMode();
+                    setSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                    isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                  }`}
+                  title="Switch the station to offline field mode (no internet)"
+                >
+                  <WifiOff className="w-4 h-4 shrink-0 text-amber-400" />
+                  {!sidebarCollapsed && <span className="truncate">Offline Field Mode</span>}
+                </button>
+              )}
+            </nav>
+          </div>
+
+          {/* Group 4: Diagnostics & Station Tools */}
           <div>
             {!sidebarCollapsed && (
               <div className={`text-[10px] font-mono font-bold uppercase tracking-wider px-3 mb-2 ${themeTextDim}`}>
@@ -3182,8 +3327,8 @@ export default function App() {
             </nav>
           </div>
 
-          {/* Group 4: Administration (visible to administrators only) */}
-          {user?.role === 'admin' && (
+          {/* Group 5: Administration (visible to signed-in administrators only) */}
+          {token && !isOfflineMode && user?.role === 'admin' && (
             <div>
               {!sidebarCollapsed && (
                 <div className={`text-[10px] font-mono font-bold uppercase tracking-wider px-3 mb-2 ${themeTextDim}`}>
@@ -3341,172 +3486,6 @@ export default function App() {
             <div className={`font-mono text-xs px-2.5 py-1 rounded border hidden sm:block ${isDark ? 'bg-[#030a16] border-[#163252] text-[#00f2fe]' : 'bg-slate-100 border-slate-300 text-slate-700'}`}>
               {clockString || '--:--:--'}
             </div>
-
-            {/* Install as an app (Android prompt, or iPhone instructions) */}
-            {!isInstalledApp && (installPrompt || isIosDevice) && (
-              <button
-                type="button"
-                onClick={handleInstallClick}
-                className="flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 active:scale-95 transition cursor-pointer"
-                title="Install AQUAPLANT as an app on this device"
-              >
-                <Download className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Install App</span>
-              </button>
-            )}
-
-            {/* One-Click Demo: shows demo values in this browser only */}
-            <button
-              type="button"
-              onClick={() => (demoMode ? stopDemoMode() : startDemoMode())}
-              className={`flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg border transition active:scale-95 cursor-pointer ${
-                demoMode
-                  ? 'bg-fuchsia-500/20 border-fuchsia-400/60 text-fuchsia-300'
-                  : (isDark ? 'bg-slate-900 border-slate-700 text-slate-300 hover:text-fuchsia-300 hover:border-fuchsia-500/40' : 'bg-slate-100 border-slate-300 text-slate-700 hover:text-fuchsia-700')
-              }`}
-              title={demoMode ? 'Stop the demo and return to real (zero) readings' : 'Show demo telemetry in this browser only — nothing is saved to the database'}
-            >
-              {demoMode ? <Square className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-              <span className="hidden md:inline">{demoMode ? 'Exit Demo' : '1-Click Demo'}</span>
-            </button>
-
-            {/* Offline Mode Indicator Badge & Switcher */}
-            {isOfflineMode ? (
-              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border bg-amber-500/15 border-amber-500/40 text-amber-300 text-xs font-mono font-bold animate-pulse">
-                <WifiOff className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">OFFLINE FIELD MODE</span>
-                <span className="md:hidden">OFFLINE</span>
-                {offlineQueuedCount > 0 && (
-                  <span
-                    className="px-1.5 py-0.5 rounded bg-amber-400/20 text-amber-200 text-[10px]"
-                    title={`${offlineQueuedCount} record(s) stored on this device, waiting to be uploaded`}
-                  >
-                    {offlineQueuedCount} queued
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={handleSwitchToOnlineMode}
-                  className="ml-1 text-[10px] px-2 py-0.5 rounded bg-amber-400 text-black font-sans font-extrabold hover:bg-amber-300 transition cursor-pointer"
-                  title="Reconnect to Cloud Server"
-                >
-                  Go Online
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => handleEnterOfflineMode()}
-                className={`hidden xl:flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-lg border font-mono transition cursor-pointer ${
-                  isDark ? 'border-[#163252] bg-[#030a16] text-slate-400 hover:text-amber-300 hover:border-amber-500/40' : 'border-slate-300 bg-slate-100 text-slate-600 hover:text-amber-700'
-                }`}
-                title="Switch Station to Offline Field Mode (No Internet Required)"
-              >
-                <WifiOff className="w-3 h-3 text-amber-400" />
-                <span>Offline Mode</span>
-              </button>
-            )}
-
-            {/* Quick Emergency Flush Button */}
-            <button
-              type="button"
-              onClick={triggerManualFlush}
-              className="hidden sm:flex items-center gap-1.5 text-xs font-bold px-3 py-1.5 rounded-lg bg-gradient-to-r from-[#eb3b5a] to-[#fa8231] text-white shadow hover:opacity-90 active:scale-95 transition cursor-pointer"
-              title="Initiate Emergency 3-Pump Flush Sequence"
-            >
-              <ShieldAlert className="w-3.5 h-3.5" />
-              <span>Emergency Flush</span>
-            </button>
-
-            {/* Quick SMS Gateway Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setShowSmsModal(true);
-                if (smsSettings?.iprog_api_key) fetchIprogBalance(smsSettings.iprog_api_key);
-              }}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition cursor-pointer ${
-                smsSettings?.enabled
-                  ? (isDark ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-400' : 'bg-emerald-50 border-emerald-300 text-emerald-700')
-                  : (isDark ? 'bg-slate-900 border-slate-700 text-slate-400' : 'bg-slate-100 border-slate-300 text-slate-700')
-              }`}
-            >
-              <Smartphone className="w-3.5 h-3.5" />
-              <span className="hidden md:inline">SMS Gateway</span>
-              <span className={`w-2 h-2 rounded-full ${smsSettings?.enabled ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}`} />
-            </button>
-
-            {/* Wi-Fi Setup Button (opens the setup page inside the dashboard) */}
-            <button
-              type="button"
-              onClick={() => setShowWifiSetupPage(true)}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition cursor-pointer ${
-                showWifiSetupPage
-                  ? (isDark ? 'bg-[#00f2fe]/10 border-[#00f2fe]/40 text-[#00f2fe]' : 'bg-cyan-50 border-cyan-300 text-cyan-800')
-                  : (isDark ? 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:border-[#00f2fe]/30' : 'bg-slate-100 border-slate-300 text-slate-700 hover:text-slate-900')
-              }`}
-              title="Open Wi-Fi Setup & ESP32 Connection inside the dashboard"
-            >
-              <Wifi className="w-3.5 h-3.5 text-amber-400" />
-              <span className="hidden sm:inline">Wi-Fi Setup</span>
-              <span className="sm:hidden">Wi-Fi</span>
-            </button>
-
-            {/* Connect to ESP32 Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setShowConnectModal(true);
-                fetchEsp32Config();
-              }}
-              className={`flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg border transition cursor-pointer ${
-                esp32Status.is_online
-                  ? (isDark ? 'bg-[#00f2fe]/10 border-[#00f2fe]/40 text-[#00f2fe]' : 'bg-cyan-50 border-cyan-300 text-cyan-800')
-                  : (isDark ? 'bg-slate-900 border-slate-700 text-slate-300 hover:text-white hover:border-[#00f2fe]/30' : 'bg-slate-100 border-slate-300 text-slate-700 hover:text-slate-900')
-              }`}
-              title="Connect & Pair ESP32 Microcontroller"
-            >
-              <Cpu className="w-3.5 h-3.5 text-[#00f2fe]" />
-              <span className="hidden sm:inline">Connect to ESP32</span>
-              <span className="sm:hidden">ESP32</span>
-              <span className={`w-2 h-2 rounded-full ${esp32Status.is_online ? 'bg-emerald-400 animate-pulse' : 'bg-rose-500'}`} />
-            </button>
-
-            {/* Operator Session & Log Out in Top Navigation Header */}
-            {token && user ? (
-              <div className="flex items-center gap-1.5 pl-2 border-l border-slate-700/40">
-                <div className="hidden xl:block text-right">
-                  <div className={`text-xs font-bold leading-tight ${isDark ? 'text-white' : 'text-slate-900'} truncate max-w-[120px]`}>
-                    {user.username}
-                  </div>
-                  <div className="text-[10px] text-slate-400 font-mono">
-                    {isOfflineMode ? 'OFFLINE' : (user.role || 'OPERATOR')}
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleLogout}
-                  className="flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg border border-rose-500/30 bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 active:scale-95 transition cursor-pointer"
-                  title="Log Out and return to Login Dashboard"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  <span className="hidden sm:inline">Log Out</span>
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setGuestReadOnly(false);
-                  setHasExplicitlyLoggedOut(true);
-                }}
-                className="flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-lg bg-gradient-to-r from-[#00f2fe] to-[#4facfe] text-[#030a16] hover:opacity-90 active:scale-95 transition cursor-pointer shadow-sm"
-                title="Return to Login Dashboard"
-              >
-                <LogIn className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Sign In Portal</span>
-              </button>
-            )}
           </div>
         </header>
 
@@ -4939,7 +4918,26 @@ export default function App() {
             )}
 
             {/* Footer Navigation */}
-            <div className={`mt-4 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'} flex items-center justify-end text-[11px] ${themeTextDim}`}>
+            <div className={`mt-4 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'} flex flex-wrap items-center justify-between gap-2 text-[11px] ${themeTextDim}`}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowLoginModal(false);
+                  setGuestReadOnly(false);
+                  setAuthScreen('register');
+                  setLoginRole('operator');
+                  setLoginError('');
+                }}
+                className="font-bold text-[#00f2fe] hover:underline transition cursor-pointer"
+              >
+                Create operator account
+              </button>
+              <a
+                href="/admin.html"
+                className="font-bold text-purple-400 hover:underline transition"
+              >
+                Administrator portal →
+              </a>
               <button
                 type="button"
                 onClick={() => setShowLoginModal(false)}
