@@ -90,11 +90,9 @@ export interface SmsAlertSetting {
   notify_on_low_water: number; // 1 or 0
   notify_on_empty_tank: number; // 1 or 0
   cooldown_minutes: number;
-  sms_provider: 'IPROG' | 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
+  sms_provider: 'IPROG';
   iprog_api_key?: string;
   iprog_sender_name?: string;
-  semaphore_api_key?: string;
-  semaphore_sender_name?: string;
   updated_at: string;
 }
 
@@ -335,8 +333,6 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
         sms_provider VARCHAR(32) NOT NULL DEFAULT 'IPROG',
         iprog_api_key VARCHAR(255) DEFAULT NULL,
         iprog_sender_name VARCHAR(64) DEFAULT NULL,
-        semaphore_api_key VARCHAR(255) DEFAULT NULL,
-        semaphore_sender_name VARCHAR(64) DEFAULT NULL,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
@@ -346,9 +342,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
     const smsGatewayColumns = [
       'ADD COLUMN notify_on_empty_tank TINYINT(1) NOT NULL DEFAULT 1',
       'ADD COLUMN iprog_api_key VARCHAR(255) DEFAULT NULL',
-      'ADD COLUMN iprog_sender_name VARCHAR(64) DEFAULT NULL',
-      'ADD COLUMN semaphore_api_key VARCHAR(255) DEFAULT NULL',
-      'ADD COLUMN semaphore_sender_name VARCHAR(64) DEFAULT NULL'
+      'ADD COLUMN iprog_sender_name VARCHAR(64) DEFAULT NULL'
     ];
     for (const clause of smsGatewayColumns) {
       try {
@@ -413,7 +407,7 @@ async function autoMigrateCloudTables(p: mysql.Pool) {
   }
 }
 
-// Initialize MySQL pool (Connected to user database sql12839434)
+// Initialize MySQL pool
 export async function initDatabase(): Promise<{ isMySQL: boolean; message: string }> {
   const rawUrl = (process.env.DATABASE_URL || process.env.MYSQL_URL || process.env.DB_URL)?.trim();
   const databaseUrl = (rawUrl && rawUrl !== 'val' && rawUrl !== 'none') ? rawUrl : undefined;
@@ -515,94 +509,6 @@ export async function initDatabase(): Promise<{ isMySQL: boolean; message: strin
 
 export function getDbConnectionStatus() {
   return dbConnectionInfo;
-}
-
-export async function connectToDatabase(config: {
-  host?: string;
-  port?: number;
-  user?: string;
-  password?: string;
-  database?: string;
-  url?: string;
-  ssl?: boolean;
-}): Promise<{ success: boolean; message: string; status: any }> {
-  try {
-    const dbName = config.database?.trim() || 'sql12839434';
-    const sslOption = config.ssl === false ? undefined : { rejectUnauthorized: false };
-
-    let newPool: mysql.Pool;
-
-    if (config.url && config.url.trim()) {
-      newPool = mysql.createPool({
-        uri: config.url.trim(),
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0,
-        ssl: sslOption
-      });
-    } else {
-      const targetHost = config.host?.trim() || 'localhost';
-      newPool = mysql.createPool({
-        host: targetHost,
-        port: Number(config.port) || 3306,
-        user: config.user?.trim() || 'sql12839434',
-        password: config.password || '',
-        database: dbName,
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0,
-        ssl: sslOption,
-        connectTimeout: 8000
-      });
-    }
-
-    const t0 = Date.now();
-    const conn = await newPool.getConnection();
-    const latency = Date.now() - t0;
-    conn.release();
-
-    // Auto-migrate tables directly into database (sql12839434)
-    await autoMigrateCloudTables(newPool);
-
-    if (pool) {
-      try {
-        await pool.end();
-      } catch {}
-    }
-
-    pool = newPool;
-    isMySqlActive = true;
-
-    const targetDisplay = config.url
-      ? config.url.split('@')[1]?.split('/')[0] || 'Cloud MySQL'
-      : `${config.host || 'localhost'}:${config.port || 3306}`;
-
-    dbConnectionInfo = {
-      is_cloud_db: true,
-      provider: 'MySQL / phpMyAdmin Database',
-      host: targetDisplay,
-      database: dbName,
-      latency_ms: latency,
-      tables_count: 6,
-      message: `Connected successfully to database '${dbName}' at ${targetDisplay} (${latency}ms latency). All 6 tables verified & synchronized.`,
-      last_checked: new Date().toISOString()
-    };
-
-    console.log(`[AQUAPLANT DB] Live database connection established to ${dbName} at ${targetDisplay}`);
-
-    return {
-      success: true,
-      message: dbConnectionInfo.message,
-      status: dbConnectionInfo
-    };
-  } catch (err: any) {
-    console.warn(`[AQUAPLANT DB] Dynamic connection attempt failed: ${err.message}`);
-    return {
-      success: false,
-      message: `Connection to '${config.database || 'sql12839434'}' failed: ${err.message}`,
-      status: dbConnectionInfo
-    };
-  }
 }
 
 // User Operations
@@ -771,15 +677,23 @@ export async function getUserStatusById(id: number): Promise<string | null> {
   return u ? (u.status || 'approved') : null;
 }
 
-// Heartbeat used by the admin dashboard to decide who is online.
+// Heartbeat used by the admin dashboard to decide who is online. The write is
+// throttled server-side (once a minute) because the dashboard polls every few
+// seconds and a write per request would burn through a free database tier.
 export async function touchUserLastSeen(id: number): Promise<void> {
   try {
     if (isMySqlActive && pool) {
-      await pool.query('UPDATE users SET last_seen = NOW() WHERE id = ?', [id]);
+      await pool.query(
+        'UPDATE users SET last_seen = NOW() WHERE id = ? AND (last_seen IS NULL OR last_seen < NOW() - INTERVAL 60 SECOND)',
+        [id]
+      );
       return;
     }
     const u = memoryStore.users.find((x) => x.id === id);
-    if (u) u.last_seen = new Date().toISOString();
+    if (u) {
+      const last = u.last_seen ? new Date(u.last_seen).getTime() : 0;
+      if (Date.now() - last > 60 * 1000) u.last_seen = new Date().toISOString();
+    }
   } catch {
     // Heartbeat failures must never break a request.
   }
@@ -1223,8 +1137,6 @@ export async function getSmsSettings(): Promise<SmsAlertSetting> {
           sms_provider: (r.sms_provider as any) || 'IPROG',
           iprog_api_key: r.iprog_api_key || undefined,
           iprog_sender_name: r.iprog_sender_name || undefined,
-          semaphore_api_key: r.semaphore_api_key || undefined,
-          semaphore_sender_name: r.semaphore_sender_name || undefined,
           updated_at: new Date(r.updated_at || Date.now()).toISOString()
         };
       }
@@ -1246,8 +1158,8 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
   if (isMySqlActive && pool) {
     try {
       await pool.query(
-        `INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, notify_on_empty_tank, cooldown_minutes, sms_provider, iprog_api_key, iprog_sender_name, semaphore_api_key, semaphore_sender_name, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `INSERT INTO sms_settings (id, phone_number, enabled, notify_on_flush, notify_on_low_ph, notify_on_high_ph, notify_on_low_tds, notify_on_high_tds, notify_on_low_water, notify_on_empty_tank, cooldown_minutes, sms_provider, iprog_api_key, iprog_sender_name, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE
            phone_number = VALUES(phone_number),
            enabled = VALUES(enabled),
@@ -1262,8 +1174,6 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
            sms_provider = VALUES(sms_provider),
            iprog_api_key = VALUES(iprog_api_key),
            iprog_sender_name = VALUES(iprog_sender_name),
-           semaphore_api_key = VALUES(semaphore_api_key),
-           semaphore_sender_name = VALUES(semaphore_sender_name),
            updated_at = NOW()`,
         [
           updated.id,
@@ -1279,9 +1189,7 @@ export async function updateSmsSettings(partial: Partial<SmsAlertSetting>): Prom
           updated.cooldown_minutes,
           updated.sms_provider,
           updated.iprog_api_key || null,
-          updated.iprog_sender_name || null,
-          updated.semaphore_api_key || null,
-          updated.semaphore_sender_name || null
+          updated.iprog_sender_name || null
         ]
       );
     } catch {

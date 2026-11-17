@@ -14,17 +14,14 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
-    "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.3.3",
     "@vitejs/plugin-react": "^6.1.1",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.2.3",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",
-    "firebase": "^13.1.0",
     "jsonwebtoken": "^9.0.3",
     "lucide-react": "^0.546.0",
-    "motion": "^12.23.24",
     "mysql2": "^3.24.6",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",

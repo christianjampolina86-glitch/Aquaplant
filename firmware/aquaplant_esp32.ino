@@ -9,7 +9,8 @@
  * - ESP32 NodeMCU / DevKit V1 (30 or 38 pin)
  * - Analog TDS Sensor (Gravity / Keyestudio) on GPIO 34 (ADC1)
  * - Analog pH Sensor Probe & Driver (E-201-C / SEN0161) on GPIO 35 (ADC1)
- * - DS18B20 Waterproof Temperature Sensor on GPIO 4 (OneWire, with 4.7k pullup)
+ * - DHT22 Ambient Air Temperature & Humidity Sensor on GPIO 13 (digital data pin)
+ *   NOTE: This measures the air around the reservoir / canopy, NOT water temperature.
  * - Non-contact / Analog Liquid Depth Sensor on GPIO 32 (ADC1)
  * - 4-Channel 5V Relay Module (Optocoupled, Active-LOW) commanding 3 Submersible Pumps:
  *     * Relay 1: Fresh Water Submersible Pump (GPIO 25) - Pumping Water
@@ -37,8 +38,7 @@
 #include <ESPmDNS.h>
 #include <Preferences.h>       // ESP32 Non-Volatile Flash Storage (NVS) for Wi-Fi credentials
 #include <ArduinoJson.h>       // ArduinoJson v6 or v7 by Benoit Blanchon
-#include <OneWire.h>           // OneWire by Paul Stoffregen
-#include <DallasTemperature.h> // DallasTemperature by Miles Burton
+#include <DHT.h>               // DHT sensor library by Adafruit (+ Adafruit Unified Sensor)
 
 // ============================================================================
 // 1. PIN DEFINITIONS & RELAY LOGIC (3 SUBMERSIBLE PUMPS)
@@ -46,8 +46,8 @@
 #define PIN_TDS         34     // Analog Input ADC1_CH6
 #define PIN_PH          35     // Analog Input ADC1_CH7
 #define PIN_WATER_LEVEL 32     // Analog Input ADC1_CH4
-#define PIN_ONEWIRE     4      // DS18B20 1-Wire Digital Pin (Needs 4.7k pull-up to 3.3V)
-#define PIN_HUMIDITY    13     // DHT22 / DHT11 Digital Humidity & Canopy Sensor
+#define PIN_HUMIDITY    13     // DHT22 ambient air temperature & humidity (digital data pin)
+#define DHTTYPE         DHT22  // Sensor type: DHT22 / AM2302
 
 #define RELAY_WATER_PUMP    25  // Submersible Pump 1: Pumping Fresh Water
 #define RELAY_SOLUTION_PUMP 26  // Submersible Pump 2: Pumping Solutioned Water
@@ -86,13 +86,17 @@ const char* LOCAL_HTTP_USER   = "admin";
 const char* LOCAL_HTTP_PASS   = "aquaplant123";
 
 // Cloud Backend Configuration
-// Replace with your deployed cloud domain (e.g. "https://aquaplant.onrender.com" or AWS EC2 IP)
-const char* SERVER_BASE_URL   = "https://aquaplant.example.com";
+// Live Render deployment. Change only if you move the server.
+const char* SERVER_BASE_URL   = "https://aquaplant-station.onrender.com";
 const char* DEVICE_KEY      = "aquaplant_esp32_device_key_secret_2026";
 
 // Timing Intervals (in milliseconds)
 const unsigned long TELEMETRY_INTERVAL  = 60000; // Send readings every 60 seconds
 const unsigned long CONTROL_POLL_INTERVAL= 3000;  // Poll cloud commands every 3 seconds
+const unsigned long WIFI_RECONNECT_INTERVAL = 30000; // Retry WiFi every 30 seconds
+const unsigned long AUTO_FLUSH_COOLDOWN_MS  = 10UL * 60UL * 1000UL; // No re-flush for 10 min
+const unsigned long SENSOR_READ_INTERVAL    = 2000;  // Sample analog sensors every 2 seconds
+const unsigned long FLUSH_PUMP_MAX_RUNTIME_MS = 3UL * 60UL * 1000UL; // Safety cap on a continuously ON flush pump
 
 // Target Hydroponic Setpoints
 const float TARGET_TDS_MIN      = 600.0;  // ppm
@@ -114,8 +118,7 @@ float tdsKValue    = 1.0;   // Calibration factor for 1413 uS/cm buffer
 // ============================================================================
 // 3. GLOBAL OBJECTS & STATE
 // ============================================================================
-OneWire oneWire(PIN_ONEWIRE);
-DallasTemperature ds18b20(&oneWire);
+DHT dht(PIN_HUMIDITY, DHTTYPE);
 WebServer localServer(80);
 Preferences preferences;
 
@@ -125,8 +128,14 @@ String activePassword       = WIFI_PASSWORD;
 String activeBackupSsid     = BACKUP_WIFI_SSID;
 String activeBackupPassword = BACKUP_WIFI_PASS;
 
+// Wi-Fi reconnect bookkeeping
+unsigned long lastWifiAttemptTime = 0;
+bool wifiRetryUseBackup = false;   // Alternate primary/backup credentials on retry
+bool wifiWasConnected = false;     // Detect the offline -> online edge
+
 // Hardware Actuator States for 3 Submersible Pumps (0 = OFF / IDLE, 1 = ON / PUMPING)
-int stateWaterPump    = 1; // Submersible Pump 1: Pumping Fresh Water
+// All pumps start OFF for safety; the control loop turns them on when needed.
+int stateWaterPump    = 0; // Submersible Pump 1: Pumping Fresh Water
 int stateSolutionPump = 0; // Submersible Pump 2: Pumping Solutioned Water
 int stateFlushPump    = 0; // Submersible Pump 3: Flushing / Evacuating
 int stateAutoMode     = 1; // 1 = Autonomous Feedback Enabled
@@ -134,6 +143,9 @@ int stateAutoMode     = 1; // 1 = Autonomous Feedback Enabled
 // Forward declarations
 void connectToNetwork();
 void applyRelayStates();
+void startFlushSequence(bool manual);
+void finishFlushSequence();
+void reportPumpState(const char* device, int state);
 
 // Save Wi-Fi Credentials to ESP32 Flash (NVS) across power reboots
 void saveWifiCredentials(String ssid, String pass, String bkSsid, String bkPass) {
@@ -155,6 +167,7 @@ void saveWifiCredentials(String ssid, String pass, String bkSsid, String bkPass)
 
 // Connect with automatic primary-to-backup failover
 void connectToNetwork() {
+  lastWifiAttemptTime = millis();
   WiFi.disconnect();
   delay(100);
   WiFi.mode(WIFI_AP_STA);
@@ -216,21 +229,17 @@ void connectToNetwork() {
   digitalWrite(PIN_STATUS_LED, LOW);
 }
 
-// Backward compatibility variable aliases
-#define statePump stateWaterPump
-#define stateFlushValve stateFlushPump
-#define stateRefillValve stateWaterPump
-
 // Telemetry Variables
 float currentTds        = 750.0;
 float currentPh         = 6.05;
-float currentTemp       = 24.5;
+float currentTemp       = 0.0;  // Ambient/reservoir air temperature (0 = no valid DHT22 reading yet)
 float currentWaterLevel = 85.0;
-float currentHumidity   = 64.5; // Ambient Canopy Relative Humidity (%)
+float currentHumidity   = 0.0;  // Ambient relative humidity (0 = no valid DHT22 reading yet)
 
 // System Timers & Network Backoff
 unsigned long lastTelemetryTime = 0;
 unsigned long lastPollTime      = 0;
+unsigned long lastSensorReadTime = 0;
 unsigned long serverBackoffUntil= 0;
 int consecutiveServerFailures   = 0;
 
@@ -243,6 +252,10 @@ enum FlushCycleState {
 };
 FlushCycleState autoFlushState = IDLE;
 unsigned long flushStageStartTime = 0;
+unsigned long lastAutoFlushEndTime = 0;
+unsigned long relaySyncBlockedUntil = 0;   // Ignore cloud relay states briefly after a flush
+unsigned long flushPumpOnSince = 0;        // Safety watchdog for a continuously ON flush pump
+bool flushIsManual = false;                // Manual cycles run even when auto mode is off
 
 // ============================================================================
 // 4. SENSOR SAMPLING & FILTERING FUNCTIONS
@@ -273,7 +286,10 @@ float readTDS(float temperatureC) {
   float voltage = (medianRaw / 4095.0) * 3.3;
 
   // Temperature compensation formula (standard 25°C baseline)
-  float compensationCoefficient = 1.0 + 0.02 * (temperatureC - 25.0);
+  // If the DHT22 has no valid reading (0), fall back to the 25°C neutral baseline
+  // instead of skewing the TDS result.
+  float compTemp = (temperatureC > 0.0) ? temperatureC : 25.0;
+  float compensationCoefficient = 1.0 + 0.02 * (compTemp - 25.0);
   float compensationVoltage     = voltage / compensationCoefficient;
 
   // Convert voltage to TDS value in ppm
@@ -304,36 +320,65 @@ float readPH() {
   return phVal;
 }
 
-// Read DS18B20 waterproof digital temperature probe
-float readTemperature() {
-  ds18b20.requestTemperatures();
-  float temp = ds18b20.getTempCByIndex(0);
-  // Sanity check: if sensor disconnected (returns -127.0 C), use default 24.0 C
-  if (temp < -50.0 || temp > 80.0) {
-    return 24.5;
+// ----------------------------------------------------------------------------
+// DHT22 ambient air sensor (temperature + humidity)
+// The DHT22 can only be sampled every ~2 seconds, so both values are cached and
+// refreshed together at most once every 2.5 seconds.
+// ----------------------------------------------------------------------------
+float dhtTempC      = NAN;
+float dhtHumidityPct = NAN;
+unsigned long lastDhtReadTime = 0;
+
+void refreshDhtSensor() {
+  unsigned long now = millis();
+  if (lastDhtReadTime != 0 && (now - lastDhtReadTime) < 2500) {
+    return; // Respect the DHT22 minimum sampling interval
   }
-  return temp;
+  lastDhtReadTime = now;
+
+  float t = dht.readTemperature(); // °C
+  float h = dht.readHumidity();    // % RH
+
+  if (!isnan(t) && t >= -40.0 && t <= 80.0) {
+    dhtTempC = t;
+  }
+  if (!isnan(h) && h >= 0.0 && h <= 100.0) {
+    dhtHumidityPct = h;
+  }
+}
+
+// Ambient / reservoir air temperature (°C) from DHT22.
+// Returns 0.0 when the sensor has no valid reading (never invents a value).
+float readTemperature() {
+  refreshDhtSensor();
+  if (isnan(dhtTempC)) return 0.0;
+  return dhtTempC;
+}
+
+// Ambient / canopy relative humidity (% RH) from DHT22.
+// Returns 0.0 when the sensor has no valid reading (never invents a value).
+float readHumidity() {
+  refreshDhtSensor();
+  if (isnan(dhtHumidityPct)) return 0.0;
+  return dhtHumidityPct;
 }
 
 // Read reservoir liquid level percentage (0 - 100%)
 float readWaterLevel() {
-  int raw = analogRead(PIN_WATER_LEVEL);
+  // Average a burst of samples; a single ADC read is noisy around the pump.
+  const int SAMPLES = 10;
+  long rawSum = 0;
+  for (int i = 0; i < SAMPLES; i++) {
+    rawSum += analogRead(PIN_WATER_LEVEL);
+    delay(3);
+  }
+  float raw = (float)rawSum / SAMPLES;
+
   // Calibration: 0 raw = empty (0%), 3100 raw = full tank (100%)
-  float pct = ((float)raw / 3100.0) * 100.0;
+  float pct = (raw / 3100.0) * 100.0;
   if (pct < 0.0) pct = 0.0;
   if (pct > 100.0) pct = 100.0;
   return pct;
-}
-
-// Read ambient/canopy relative humidity (% RH) from digital sensor
-float readHumidity() {
-  // ESP32 samples digital or analog humidity probe (DHT22 on PIN_HUMIDITY)
-  // For standard hardware, if DHT sensor not detected, generates steady canopy baseline 64.5%
-  float hum = 64.5;
-  // Apply sanity clamping: relative humidity 10.0% to 100.0%
-  if (hum < 10.0) hum = 10.0;
-  if (hum > 100.0) hum = 100.0;
-  return hum;
 }
 
 // Update all sensor variables
@@ -365,44 +410,85 @@ void applyRelayStates() {
  *   Stage 1: Pause Fresh & Solutioned pumps; activate Flushing Submersible Pump to evacuate spent reservoir solution.
  *   Stage 2: Stop Flushing Pump; engage Fresh Water Submersible Pump to refill base liquid.
  *   Stage 3: Engage Solutioned Water Submersible Pump alongside Fresh Water Pump to re-establish target TDS/pH.
- *   Stage 4: Stabilize and resume standard circulation.
+ *   Stage 4: Stabilize, then switch every pump OFF and enter a 10-minute cooldown.
  */
+// Begin a 3-pump flush cycle. Manual cycles run even when auto mode is OFF.
+void startFlushSequence(bool manual) {
+  autoFlushState = DRAINING_RESERVOIR;
+  flushStageStartTime = millis();
+  flushIsManual = manual;
+
+  stateWaterPump = 0;
+  stateSolutionPump = 0;
+  stateFlushPump = 1;
+  applyRelayStates();
+
+  Serial.printf("[FLUSH] %s flush cycle started. Draining reservoir...\n", manual ? "Manual" : "Automatic");
+}
+
+// End the cycle, switch every pump OFF, and resynchronise the cloud state.
+void finishFlushSequence() {
+  stateWaterPump = 0;
+  stateSolutionPump = 0;
+  stateFlushPump = 0;
+  applyRelayStates();
+
+  autoFlushState = IDLE;
+  flushIsManual = false;
+  flushPumpOnSince = 0;
+  lastAutoFlushEndTime = millis();
+  // Give the cloud time to record the OFF states before trusting its next poll.
+  relaySyncBlockedUntil = millis() + 10000;
+
+  Serial.println(F("[FLUSH] Cycle complete. All pumps OFF."));
+  reportPumpState("flush_pump", 0);
+  reportPumpState("water_pump", 0);
+  reportPumpState("solution_pump", 0);
+}
+
 void handleAutonomousHydroponicLogic() {
-  if (!stateAutoMode) {
-    autoFlushState = IDLE;
+  unsigned long now = millis();
+  bool cycleActive = (autoFlushState != IDLE);
+
+  // Auto mode disabled mid-cycle: stop safely instead of abandoning a running pump.
+  if (cycleActive && !flushIsManual && !stateAutoMode) {
+    Serial.println(F("[AUTO-LOGIC] Auto mode disabled. Aborting flush cycle safely."));
+    finishFlushSequence();
     return;
   }
 
-  unsigned long now = millis();
+  // Nothing to do when auto mode is off and no manual/auto cycle is running.
+  if (!cycleActive && !stateAutoMode) return;
 
   switch (autoFlushState) {
     case IDLE: {
-      bool tdsOutOfRange = (currentTds > TARGET_TDS_MAX || (currentTds < TARGET_TDS_MIN && currentTds > 50));
-      bool phOutOfRange  = (currentPh < TARGET_PH_MIN || currentPh > TARGET_PH_MAX);
+      // Do not start another automatic cycle during the cooldown window.
+      if (lastAutoFlushEndTime != 0 && (now - lastAutoFlushEndTime) < AUTO_FLUSH_COOLDOWN_MS) break;
+
+      // A disconnected probe reads 0 V: ignore implausible values so the
+      // controller does not flush forever on a sensor fault.
+      bool tdsPlausible = (currentTds >= 50.0);
+      bool phPlausible  = (currentPh > 1.0 && currentPh < 13.0);
+
+      bool tdsOutOfRange = tdsPlausible && (currentTds > TARGET_TDS_MAX || currentTds < TARGET_TDS_MIN);
+      bool phOutOfRange  = phPlausible  && (currentPh < TARGET_PH_MIN || currentPh > TARGET_PH_MAX);
 
       if (tdsOutOfRange || phOutOfRange) {
         Serial.println(F("[AUTO-LOGIC] Feedback Triggered: Out of Target Range!"));
         Serial.printf("TDS: %.1f ppm (Target 600-900), pH: %.2f (Target 5.5-6.5)\n", currentTds, currentPh);
-        
-        // Begin Auto-Flushing Stage 1: Evacuate using Flushing Submersible Pump
-        autoFlushState = DRAINING_RESERVOIR;
-        flushStageStartTime = now;
-        stateWaterPump = 0;       // Stop fresh water supply
-        stateSolutionPump = 0;   // Stop solutioned water pump
-        stateFlushPump = 1;      // Turn ON Flushing Submersible Pump
-        applyRelayStates();
+        startFlushSequence(false);
       }
       break;
     }
 
     case DRAINING_RESERVOIR: {
-      // Evacuate with Flushing Pump for 15s or until liquid level reaches 30%
-      if (now - flushStageStartTime >= 15000 || currentWaterLevel <= 30.0) {
-        Serial.println(F("[AUTO-LOGIC] Drain complete. Commencing fresh water submersible pump refill..."));
+      // Evacuate with the flushing pump for 15s or until the level reaches 30%.
+      if ((now - flushStageStartTime >= 15000) || (currentWaterLevel <= 30.0)) {
+        Serial.println(F("[AUTO-LOGIC] Drain complete. Commencing fresh water refill..."));
         autoFlushState = REFILLING_FRESH_WATER;
         flushStageStartTime = now;
-        stateFlushPump = 0;      // Turn OFF Flushing Pump
-        stateWaterPump = 1;      // Turn ON Fresh Water Submersible Pump
+        stateFlushPump = 0;
+        stateWaterPump = 1;
         stateSolutionPump = 0;
         applyRelayStates();
       }
@@ -410,28 +496,24 @@ void handleAutonomousHydroponicLogic() {
     }
 
     case REFILLING_FRESH_WATER: {
-      // Refill fresh water until level reaches 80% or timeout 20s
-      if (currentWaterLevel >= 80.0 || (now - flushStageStartTime >= 20000)) {
-        Serial.println(F("[AUTO-LOGIC] Fresh water added. Engaging solutioned water pump to balance nutrients..."));
+      // Refill with fresh water until the level reaches 80% or 20s elapse.
+      if ((currentWaterLevel >= 80.0) || (now - flushStageStartTime >= 20000)) {
+        Serial.println(F("[AUTO-LOGIC] Fresh water added. Engaging solution pump..."));
         autoFlushState = STABILIZING_READINGS;
         flushStageStartTime = now;
         stateFlushPump = 0;
         stateWaterPump = 1;
-        stateSolutionPump = 1;   // Turn ON Solutioned Water Submersible Pump
+        stateSolutionPump = 1;
         applyRelayStates();
       }
       break;
     }
 
     case STABILIZING_READINGS: {
-      // Run pumps for 20s to blend, then shut off solution pump and continue normal fresh water circulation
+      // Blend for 20s, then shut everything down and wait out the cooldown.
       if (now - flushStageStartTime >= 20000) {
         Serial.println(F("[AUTO-LOGIC] Nutrient solution reconstituted. 3-pump cycle complete."));
-        stateFlushPump = 0;
-        stateSolutionPump = 0;
-        stateWaterPump = 1;      // Normal fresh water operation
-        applyRelayStates();
-        autoFlushState = IDLE;
+        finishFlushSequence();
       }
       break;
     }
@@ -442,14 +524,49 @@ void handleAutonomousHydroponicLogic() {
 // 6. CLOUD REST API CLIENT (SEND TELEMETRY & POLL CONTROLS)
 // ============================================================================
 
+// Tell the cloud which physical state a pump is in (used after a local cycle).
+void reportPumpState(const char* device, int state) {
+  if (WiFi.status() != WL_CONNECTED) return;
+  if (millis() < serverBackoffUntil) return;
+
+  WiFiClientSecure client;
+  client.setInsecure(); // Render presents a valid certificate; the ESP32 has no CA bundle.
+
+  HTTPClient http;
+  String url = String(SERVER_BASE_URL) + "/api/controls/device/" + device;
+  if (!http.begin(client, url)) {
+    Serial.printf("[CLOUD ERROR] Unable to sync %s state.\n", device);
+    return;
+  }
+  http.setTimeout(8000);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Device-Key", DEVICE_KEY);
+
+  String body = String(F("{\"state\":")) + (state ? 1 : 0) + "}";
+  int httpCode = http.POST(body);
+  if (httpCode < 200 || httpCode >= 300) {
+    Serial.printf("[CLOUD ERROR] State sync for %s failed (HTTP %d)\n", device, httpCode);
+  }
+  http.end();
+}
+
 // Send 60s Telemetry to Cloud
 void sendTelemetryToCloud() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (millis() < serverBackoffUntil) return;
 
+  // HTTPS requires a secure client; setInsecure() skips certificate pinning.
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
   String url = String(SERVER_BASE_URL) + "/api/sensors";
-  http.begin(url);
+  if (!http.begin(client, url)) {
+    Serial.println(F("[CLOUD ERROR] Unable to open secure connection for telemetry."));
+    handleCloudFailure();
+    return;
+  }
+  http.setTimeout(10000);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-Device-Key", DEVICE_KEY);
 
@@ -480,55 +597,78 @@ void pollCloudCommands() {
   if (WiFi.status() != WL_CONNECTED) return;
   if (millis() < serverBackoffUntil) return;
 
+  WiFiClientSecure client;
+  client.setInsecure(); // Render presents a valid certificate; the ESP32 has no CA bundle.
+
   HTTPClient http;
   String url = String(SERVER_BASE_URL) + "/api/controls/device";
-  http.begin(url);
+  if (!http.begin(client, url)) {
+    Serial.println(F("[CLOUD ERROR] Unable to open secure connection for polling."));
+    handleCloudFailure();
+    return;
+  }
+  http.setTimeout(8000);
   http.addHeader("X-Device-Key", DEVICE_KEY);
 
   int httpCode = http.GET();
   if (httpCode == 200) {
     String payload = http.getString();
-    StaticJsonDocument<512> doc;
+    // 1024 bytes leaves room for the optional Wi-Fi credential block.
+    StaticJsonDocument<1024> doc;
     DeserializationError err = deserializeJson(doc, payload);
-    if (!err) {
-      if (doc.containsKey("water_pump"))    stateWaterPump    = doc["water_pump"].as<int>();
-      else if (doc.containsKey("pump"))     stateWaterPump    = doc["pump"].as<int>();
-
-      if (doc.containsKey("solution_pump")) stateSolutionPump = doc["solution_pump"].as<int>();
-
-      if (doc.containsKey("flush_pump"))    stateFlushPump    = doc["flush_pump"].as<int>();
-      else if (doc.containsKey("flush_valve")) stateFlushPump = doc["flush_valve"].as<int>();
-
-      if (doc.containsKey("auto_mode"))     stateAutoMode     = doc["auto_mode"].as<int>();
-      
-      // If server requests a manual flush cycle
-      if (doc.containsKey("trigger_flush") && doc["trigger_flush"].as<bool>()) {
-        Serial.println(F("[COMMAND] Cloud triggered 3-Pump Manual Flush sequence!"));
-        autoFlushState = DRAINING_RESERVOIR;
-        flushStageStartTime = millis();
-        stateWaterPump = 0;
-        stateSolutionPump = 0;
-        stateFlushPump = 1;
-      }
-
-      // Check for Over-The-Air Wi-Fi credentials pushed from web console
-      if (doc.containsKey("new_wifi")) {
-        JsonObject nw = doc["new_wifi"].as<JsonObject>();
-        String nSsid   = nw.containsKey("ssid") ? nw["ssid"].as<String>() : "";
-        String nPass   = nw.containsKey("password") ? nw["password"].as<String>() : "";
-        String nBkSsid = nw.containsKey("backup_ssid") ? nw["backup_ssid"].as<String>() : "";
-        String nBkPass = nw.containsKey("backup_password") ? nw["backup_password"].as<String>() : "";
-        if (nSsid.length() > 0) {
-          Serial.println(F("[OTA] Received Wi-Fi credentials update from cloud console! Saving to Flash..."));
-          saveWifiCredentials(nSsid, nPass, nBkSsid, nBkPass);
-          connectToNetwork();
-        }
-      }
-
-      applyRelayStates();
-      consecutiveServerFailures = 0;
+    if (err) {
+      Serial.printf("[CLOUD ERROR] Poll JSON parse failed: %s\n", err.c_str());
+      handleCloudFailure();
+      http.end();
+      return;
     }
+
+    // Only follow cloud relay states when no local flush cycle owns the pumps.
+    bool relaysWritable = (autoFlushState == IDLE) && (millis() >= relaySyncBlockedUntil);
+    if (relaysWritable) {
+      if (doc["water_pump"].is<int>())       stateWaterPump    = doc["water_pump"].as<int>() ? 1 : 0;
+      else if (doc["pump"].is<int>())        stateWaterPump    = doc["pump"].as<int>() ? 1 : 0;
+
+      if (doc["solution_pump"].is<int>())    stateSolutionPump = doc["solution_pump"].as<int>() ? 1 : 0;
+
+      if (doc["flush_pump"].is<int>())       stateFlushPump    = doc["flush_pump"].as<int>() ? 1 : 0;
+      else if (doc["flush_valve"].is<int>()) stateFlushPump    = doc["flush_valve"].as<int>() ? 1 : 0;
+    }
+
+    if (doc["auto_mode"].is<int>()) {
+      stateAutoMode = doc["auto_mode"].as<int>() ? 1 : 0;
+    }
+
+    // Manual flush request (one-shot; the server clears the flag after this poll).
+    if (doc["trigger_flush"].as<bool>()) {
+      if (autoFlushState == IDLE) {
+        Serial.println(F("[COMMAND] Cloud triggered the 3-pump manual flush sequence!"));
+        startFlushSequence(true);
+      } else {
+        Serial.println(F("[COMMAND] Flush request ignored: a cycle is already running."));
+      }
+    }
+
+    // Wi-Fi credentials pushed from the web console.
+    if (doc["new_wifi"].is<JsonObject>()) {
+      JsonObject nw = doc["new_wifi"].as<JsonObject>();
+      String nSsid   = nw["ssid"]        | "";
+      String nPass   = nw["pass"]        | "";
+      String nBkSsid = nw["backup_ssid"] | "";
+      String nBkPass = nw["backup_pass"] | "";
+      if (nSsid.length() > 0) {
+        if (nPass.length() == 0)   nPass   = activePassword;
+        if (nBkPass.length() == 0) nBkPass = activeBackupPassword;
+        Serial.println(F("[OTA] Received Wi-Fi credentials update from cloud console. Saving to flash..."));
+        saveWifiCredentials(nSsid, nPass, nBkSsid, nBkPass);
+        connectToNetwork();
+      }
+    }
+
+    if (autoFlushState == IDLE) applyRelayStates();
+    consecutiveServerFailures = 0;
   } else {
+    Serial.printf("[CLOUD ERROR] Control poll failed (HTTP %d)\n", httpCode);
     handleCloudFailure();
   }
   http.end();
@@ -579,7 +719,7 @@ void handleLocalRoot() {
     "<div class='card'><div>pH Value</div><div class='val'>");
   html += String(currentPh, 2);
   html += F("</div><small>Target: 5.5-6.5</small></div>"
-    "<div class='card'><div>Water Temp</div><div class='val'>");
+    "<div class='card'><div>Reservoir Air Temp</div><div class='val'>");
   html += String(currentTemp, 1);
   html += F(" °C</div><small>Target: 20-28°C</small></div>"
     "<div class='card'><div>Water Level</div><div class='val'>");
@@ -592,9 +732,6 @@ void handleLocalRoot() {
     "<div class='card'>"
     "<h3>Hardware Actuator Relays</h3>"
     "<a class='btn ");
-  html += (statePump ? "btn-on" : "");
-  html += F("' href='/toggle?dev=pump'>Circulation Pump: ");
-  html += F("</a><a class='btn ");
   html += (stateWaterPump ? "btn-on" : "");
   html += F("' href='/toggle?dev=water'>Fresh Water Pump: ");
   html += (stateWaterPump ? "ACTIVE" : "IDLE");
@@ -633,6 +770,20 @@ void handleLocalRoot() {
 
 void handleLocalToggle() {
   if (!checkLocalAuth()) return;
+
+  // A human at the rescue portal takes manual control: stop any running cycle.
+  if (autoFlushState != IDLE) {
+    autoFlushState = IDLE;
+    flushIsManual = false;
+    flushPumpOnSince = 0;
+    lastAutoFlushEndTime = millis();
+    relaySyncBlockedUntil = millis() + 10000;
+    stateWaterPump = 0;
+    stateSolutionPump = 0;
+    stateFlushPump = 0;
+    Serial.println(F("[HTTP] Manual relay change cancelled the running flush cycle."));
+  }
+
   if (localServer.hasArg("dev")) {
     String dev = localServer.arg("dev");
     if (dev == "water" || dev == "pump")        stateWaterPump = !stateWaterPump;
@@ -646,12 +797,11 @@ void handleLocalToggle() {
 
 void handleLocalManualFlush() {
   if (!checkLocalAuth()) return;
-  autoFlushState = DRAINING_RESERVOIR;
-  flushStageStartTime = millis();
-  stateWaterPump = 0;
-  stateSolutionPump = 0;
-  stateFlushPump = 1;
-  applyRelayStates();
+  if (autoFlushState == IDLE) {
+    startFlushSequence(true);
+  } else {
+    Serial.println(F("[HTTP] Manual flush ignored: a cycle is already running."));
+  }
   localServer.sendHeader("Location", "/");
   localServer.send(303);
 }
@@ -688,18 +838,23 @@ void setup() {
   Serial.println(F("Capstone Hydroponic Reservoir Controller"));
   Serial.println(F("=========================================="));
 
-  // Initialize GPIO Pins
-  pinMode(RELAY_PUMP, OUTPUT);
-  pinMode(RELAY_FLUSH_VALVE, OUTPUT);
-  pinMode(RELAY_REFILL_VALVE, OUTPUT);
+  // Initialize GPIO Pins. Drive the active-LOW relay lines HIGH (OFF) before
+  // switching them to outputs so the pumps cannot pulse during boot.
+  digitalWrite(RELAY_WATER_PUMP, RELAY_OFF);
+  digitalWrite(RELAY_SOLUTION_PUMP, RELAY_OFF);
+  digitalWrite(RELAY_FLUSH_PUMP, RELAY_OFF);
+  digitalWrite(RELAY_AUX, RELAY_OFF);
+  pinMode(RELAY_WATER_PUMP, OUTPUT);
+  pinMode(RELAY_SOLUTION_PUMP, OUTPUT);
+  pinMode(RELAY_FLUSH_PUMP, OUTPUT);
   pinMode(RELAY_AUX, OUTPUT);
   pinMode(PIN_STATUS_LED, OUTPUT);
 
   // Set default safe relay outputs
   applyRelayStates();
 
-  // Initialize DS18B20 1-Wire temperature sensor
-  ds18b20.begin();
+  // Initialize DHT22 ambient air temperature & humidity sensor
+  dht.begin();
 
   // Configure ADC attenuation (11dB gives full 0 - 3.3V measurement range)
   analogSetAttenuation(ADC_11db);
@@ -741,6 +896,7 @@ void setup() {
 
   // Initial sensor read
   updateAllSensors();
+  lastSensorReadTime = millis();
   digitalWrite(PIN_STATUS_LED, HIGH);
 }
 
@@ -787,19 +943,67 @@ void loop() {
     }
   }
 
-  // 3. Read sensors periodically
-  updateAllSensors();
+  // 3. Non-blocking Wi-Fi recovery. The rescue AP and the control loop keep
+  //    running while the station retries; credentials alternate on each retry.
+  bool wifiOnline = (WiFi.status() == WL_CONNECTED);
+  if (!wifiOnline) {
+    digitalWrite(PIN_STATUS_LED, ((currentMillis / 500) % 2) ? HIGH : LOW);
+    if (currentMillis - lastWifiAttemptTime >= WIFI_RECONNECT_INTERVAL) {
+      lastWifiAttemptTime = currentMillis;
+      WiFi.mode(WIFI_AP_STA); // Keep 192.168.4.1 reachable during recovery
+      if (!wifiRetryUseBackup || activeBackupSsid.length() == 0) {
+        Serial.printf("[WIFI] Retrying primary network: %s\n", activeSsid.c_str());
+        WiFi.begin(activeSsid.c_str(), activePassword.c_str());
+      } else {
+        Serial.printf("[WIFI] Retrying backup network: %s\n", activeBackupSsid.c_str());
+        WiFi.begin(activeBackupSsid.c_str(), activeBackupPassword.c_str());
+      }
+      wifiRetryUseBackup = !wifiRetryUseBackup;
+    }
+  } else if (!wifiWasConnected) {
+    Serial.print(F("[WIFI] Link online. IP: "));
+    Serial.println(WiFi.localIP());
+    digitalWrite(PIN_STATUS_LED, HIGH);
+    // Report immediately instead of waiting a full telemetry period.
+    lastTelemetryTime = 0;
+    lastPollTime = 0;
+    serverBackoffUntil = 0;
+    consecutiveServerFailures = 0;
+  }
+  wifiWasConnected = wifiOnline;
 
-  // 4. Autonomous Hydroponic Feedback Loop (Check TDS & pH targets)
+  // 4. Read sensors every 2 seconds. Reading on every loop would block the
+  //    web server and cloud polling for ~150 ms at a time.
+  if (currentMillis - lastSensorReadTime >= SENSOR_READ_INTERVAL) {
+    lastSensorReadTime = currentMillis;
+    updateAllSensors();
+  }
+
+  // 5. Autonomous Hydroponic Feedback Loop (Check TDS & pH targets)
   handleAutonomousHydroponicLogic();
 
-  // 5. Poll Cloud Commands every 3 seconds
+  // 6. Safety cap: never let a cloud-commanded flush pump run indefinitely.
+  if (stateFlushPump && autoFlushState == IDLE) {
+    if (flushPumpOnSince == 0) flushPumpOnSince = currentMillis;
+    if (currentMillis - flushPumpOnSince >= FLUSH_PUMP_MAX_RUNTIME_MS) {
+      Serial.println(F("[SAFETY] Flush pump ran too long. Switching it OFF."));
+      stateFlushPump = 0;
+      flushPumpOnSince = 0;
+      applyRelayStates();
+      relaySyncBlockedUntil = currentMillis + 10000;
+      reportPumpState("flush_pump", 0);
+    }
+  } else if (!stateFlushPump) {
+    flushPumpOnSince = 0;
+  }
+
+  // 7. Poll Cloud Commands every 3 seconds
   if (currentMillis - lastPollTime >= CONTROL_POLL_INTERVAL) {
     lastPollTime = currentMillis;
     pollCloudCommands();
   }
 
-  // 6. Send Telemetry to Cloud every 60 seconds
+  // 8. Send Telemetry to Cloud every 60 seconds
   if (currentMillis - lastTelemetryTime >= TELEMETRY_INTERVAL) {
     lastTelemetryTime = currentMillis;
     sendTelemetryToCloud();

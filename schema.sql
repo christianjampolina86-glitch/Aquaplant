@@ -150,8 +150,6 @@ CREATE TABLE IF NOT EXISTS `sms_settings` (
   `sms_provider` VARCHAR(32) NOT NULL DEFAULT 'IPROG',
   `iprog_api_key` VARCHAR(255) DEFAULT NULL,
   `iprog_sender_name` VARCHAR(64) DEFAULT NULL,
-  `semaphore_api_key` VARCHAR(255) DEFAULT NULL,
-  `semaphore_sender_name` VARCHAR(64) DEFAULT NULL,
   `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

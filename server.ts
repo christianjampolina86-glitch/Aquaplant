@@ -55,9 +55,7 @@ import {
   clearSmsLogs,
   canDispatchSms,
   getDbConnectionStatus,
-  connectToDatabase,
   SmsLog,
-  SmsAlertSetting,
   SystemLog
 } from './src/db.ts';
 
@@ -74,8 +72,13 @@ const DEVICE_KEY = (rawKey && rawKey !== 'val' && rawKey !== 'undefined' && rawK
 const ALLOW_REGISTRATION = process.env.ALLOW_REGISTRATION !== 'false';
 
 // Access code required to create a NEW administrator account from the Admin Portal.
-// Change this in Render -> Environment (ADMIN_SIGNUP_CODE) to your own secret.
-const ADMIN_SIGNUP_CODE = process.env.ADMIN_SIGNUP_CODE || 'AQUAPLANT-ADMIN-2026';
+// It must be supplied through Render -> Environment (ADMIN_SIGNUP_CODE). The old
+// hardcoded default is only allowed in local development; in production an unset
+// code disables administrator self-registration so a public repo cannot be used to
+// create an admin account.
+const configuredAdminSignupCode = process.env.ADMIN_SIGNUP_CODE?.trim();
+const ADMIN_SIGNUP_CODE = configuredAdminSignupCode || 'AQUAPLANT-ADMIN-2026';
+const ADMIN_SIGNUP_ENABLED = Boolean(configuredAdminSignupCode) || process.env.NODE_ENV !== 'production';
 
 // Very small brute-force guard for the public sign-in endpoint.
 const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
@@ -298,6 +301,12 @@ app.post('/api/auth/register-admin', async (req: Request, res: Response) => {
 
     if (!username || !email || !password || !admin_code) {
       res.status(400).json({ error: 'Username, email, password and admin access code are required.' });
+      return;
+    }
+    if (!ADMIN_SIGNUP_ENABLED) {
+      res.status(503).json({
+        error: 'Administrator self-registration is disabled. Ask the server owner to set ADMIN_SIGNUP_CODE.'
+      });
       return;
     }
     if (String(admin_code).trim() !== ADMIN_SIGNUP_CODE) {
@@ -534,7 +543,7 @@ app.delete('/api/admin/users/:id', authenticateToken, requireAdmin, async (req: 
 });
 
 // ============================================================================
-// SMS ALERTS DISPATCH ENGINE (IPROG SMS PH / Semaphore PH / Twilio / Webhook)
+// SMS ALERTS DISPATCH ENGINE (IPROG SMS PH)
 // ============================================================================
 
 // Convert a Philippine mobile number to the format SMS gateways expect.
@@ -566,115 +575,40 @@ export async function dispatchSmsAlert(
       };
     }
 
-    const configuredProvider = (settings.sms_provider || 'IPROG').toUpperCase();
+    const provider: SmsLog['provider'] = 'IPROG';
     const iprogKey = settings.iprog_api_key || process.env.IPROG_API_KEY;
-    // Migrate old rows that still say SIMULATOR once an IPROG token exists.
-    const provider = configuredProvider === 'SIMULATOR' && iprogKey ? 'IPROG' : configuredProvider;
     let status: SmsLog['status'] = 'SENT';
     let reason4Failure: string | undefined;
 
-    const semaphoreKey = settings.semaphore_api_key || process.env.SEMAPHORE_API_KEY;
-    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
-    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
-    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
-    const webhookUrl = process.env.SMS_WEBHOOK_URL;
+    if (!iprogKey) {
+      return {
+        sent: false,
+        reason: 'IPROG SMS API token is not configured. Paste your IPROG API token in the SMS Alert Gateway and save it.'
+      };
+    }
 
-    if (provider === 'IPROG') {
-      if (!iprogKey) {
-        return {
-          sent: false,
-          reason: 'IPROG SMS API token is not configured. Paste your IPROG API token in the SMS Alert Gateway and save it.'
-        };
+    try {
+      const res = await fetch('https://www.iprogsms.com/api/v1/sms_messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          api_token: iprogKey,
+          phone_number: phone,
+          message
+        })
+      });
+      const data = await res.json().catch(() => null);
+      const apiStatus = Number(data?.status);
+      const ok = res.ok && (!Number.isFinite(apiStatus) || apiStatus < 400) && !data?.error;
+      if (!ok) {
+        status = 'FAILED';
+        reason4Failure = data?.message || data?.error || `IPROG responded with HTTP ${res.status}`;
       }
-      try {
-        const res = await fetch('https://www.iprogsms.com/api/v1/sms_messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            api_token: iprogKey,
-            phone_number: phone,
-            message
-          })
-        });
-        const data = await res.json().catch(() => null);
-        const apiStatus = Number(data?.status);
-        const ok = res.ok && (!Number.isFinite(apiStatus) || apiStatus < 400) && !data?.error;
-        if (!ok) {
-          status = 'FAILED';
-          reason4Failure = data?.message || data?.error || `IPROG responded with HTTP ${res.status}`;
-        }
-      } catch (err: any) {
-        return { sent: false, reason: `Could not reach IPROG SMS: ${err.message}` };
-      }
-    } else if (provider === 'SEMAPHORE') {
-      if (!semaphoreKey) {
-        return { sent: false, reason: 'Semaphore API key is not configured.' };
-      }
-      try {
-        const params = new URLSearchParams({
-          apikey: semaphoreKey,
-          number: phone,
-          message,
-          sendername: settings.semaphore_sender_name || process.env.SEMAPHORE_SENDER_NAME || 'SEMAPHORE'
-        });
-        const res = await fetch('https://api.semaphore.co/api/v4/messages', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          body: params.toString()
-        });
-        if (!res.ok) {
-          status = 'FAILED';
-          reason4Failure = `Semaphore responded with HTTP ${res.status}`;
-        }
-      } catch (err: any) {
-        return { sent: false, reason: `Could not reach Semaphore: ${err.message}` };
-      }
-    } else if (provider === 'TWILIO') {
-      if (!twilioSid || !twilioToken || !twilioFrom) {
-        return { sent: false, reason: 'Twilio credentials are not configured on the server.' };
-      }
-      try {
-        const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64');
-        const body = new URLSearchParams({
-          To: '+' + phone,
-          From: twilioFrom,
-          Body: message
-        });
-        const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`, {
-          method: 'POST',
-          headers: {
-            Authorization: `Basic ${auth}`,
-            'Content-Type': 'application/x-www-form-urlencoded'
-          },
-          body: body.toString()
-        });
-        if (!res.ok) {
-          status = 'FAILED';
-          reason4Failure = `Twilio responded with HTTP ${res.status}`;
-        }
-      } catch (err: any) {
-        return { sent: false, reason: `Could not reach Twilio: ${err.message}` };
-      }
-    } else if (provider === 'WEBHOOK') {
-      if (!webhookUrl) {
-        return { sent: false, reason: 'SMS webhook URL is not configured on the server.' };
-      }
-      try {
-        const res = await fetch(webhookUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone, message, eventType, timestamp: new Date().toISOString() })
-        });
-        if (!res.ok) {
-          status = 'FAILED';
-          reason4Failure = `SMS webhook responded with HTTP ${res.status}`;
-        }
-      } catch (err: any) {
-        return { sent: false, reason: `Could not reach SMS webhook: ${err.message}` };
-      }
-    } else {
-      // Explicit simulator mode: recorded as simulated, never claimed as delivered.
-      status = 'SIMULATED';
+    } catch (err: any) {
+      // Record the failure through the normal log path so the per-event
+      // cooldown engages and the gateway is not retried every 10 seconds.
+      status = 'FAILED';
+      reason4Failure = `Could not reach IPROG SMS: ${err.message}`;
     }
 
     const log = await createSmsLog({
@@ -771,11 +705,13 @@ async function evaluateTelemetryForSmsAlerts(reading: { tds: number; ph: number;
         }
         if (!emptyTankAlertSent && now - waterEmptySince >= EMPTY_TANK_CONFIRM_MS) {
           const emptyMinutes = Math.max(5, Math.round((now - waterEmptySince) / 60000));
-          const result = await dispatchSmsAlert(
+          await dispatchSmsAlert(
             'EMPTY_TANK',
             `AQUAPLANT CRITICAL: No water detected in the refill tank for ${emptyMinutes} minutes (level ${level.toFixed(1)}%). The tank appears EMPTY - refill it immediately. If the tank is not actually empty, check the water-level sensor wiring.`
           );
-          if (result.sent) emptyTankAlertSent = true;
+          // Latch after the attempt (even a failed one) so a dead gateway or a
+          // disabled SMS toggle cannot retry the same emergency every reading.
+          emptyTankAlertSent = true;
         }
       }
     }
@@ -794,13 +730,36 @@ app.post('/api/sensors', authenticateDeviceKey, async (req: Request, res: Respon
       return;
     }
 
-    const clientIp = req.headers['x-forwarded-for']?.toString() || req.socket.remoteAddress || 'ESP32';
+    // Reject malformed packets instead of storing NaN/Infinity, which would
+    // break the charts and fire nonsense SMS alerts.
+    const numeric = {
+      tds: Number(tds),
+      ph: Number(ph),
+      temperature: Number(temperature),
+      water_level: Number(water_level),
+      humidity: humidity !== undefined ? Number(humidity) : 0
+    };
+    if (!Object.values(numeric).every((value) => Number.isFinite(value))) {
+      res.status(400).json({ error: 'Sensor parameters must all be finite numbers.' });
+      return;
+    }
+    if (
+      numeric.tds < 0 ||
+      numeric.ph < 0 || numeric.ph > 14 ||
+      numeric.water_level < 0 || numeric.water_level > 100 ||
+      numeric.humidity < 0 || numeric.humidity > 100
+    ) {
+      res.status(400).json({ error: 'Sensor parameters are outside the physical range of the probes.' });
+      return;
+    }
+
+    const clientIp = (req.headers['x-forwarded-for']?.toString().split(',')[0].trim()) || req.socket.remoteAddress || 'ESP32';
     const reading = await insertSensorReading(
-      Number(tds),
-      Number(ph),
-      Number(temperature),
-      Number(water_level),
-      humidity !== undefined ? Number(humidity) : 0,
+      numeric.tds,
+      numeric.ph,
+      numeric.temperature,
+      numeric.water_level,
+      numeric.humidity,
       clientIp
     );
 
@@ -1349,74 +1308,6 @@ app.get('/api/export/excel', authenticateToken, async (req: AuthenticatedRequest
   }
 });
 
-// 12. Diagnostic & Sensor Calibration Injection (for hardware calibration & test triggers)
-app.post('/api/simulator/reading', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { tds, ph, temperature, water_level, humidity, simulate_anomaly } = req.body;
-
-    // Every value has to come from the operator: no invented demo numbers.
-    let finalTds = Number(tds);
-    let finalPh = Number(ph);
-    let finalTemp = Number(temperature);
-    let finalLevel = Number(water_level);
-    let finalHumidity = Number(humidity);
-
-    if (![finalTds, finalPh, finalTemp, finalLevel, finalHumidity].every((n) => Number.isFinite(n))) {
-      res.status(400).json({ error: 'tds, ph, temperature, water_level and humidity must all be numbers.' });
-      return;
-    }
-
-    if (simulate_anomaly === 'high_tds') {
-      finalTds = 1120; // Causes salt build-up alert
-    } else if (simulate_anomaly === 'low_tds') {
-      finalTds = 420; // Deficiency alert
-    } else if (simulate_anomaly === 'acidic_ph') {
-      finalPh = 4.8; // Acidic lockout
-    } else if (simulate_anomaly === 'alkaline_ph') {
-      finalPh = 7.4; // Alkaline precipitation
-    } else if (simulate_anomaly === 'low_water') {
-      finalLevel = 25; // Water level warning
-    } else if (simulate_anomaly === 'dry_air') {
-      finalHumidity = 36.0; // Dry air stress
-    } else if (simulate_anomaly === 'high_humidity') {
-      finalHumidity = 86.0; // Mold risk
-    }
-
-    const reading = await insertSensorReading(
-      finalTds,
-      finalPh,
-      finalTemp,
-      finalLevel,
-      finalHumidity,
-      'CALIBRATION-PROBE'
-    );
-
-    const isTdsOut = finalTds < 600 || finalTds > 900;
-    const isPhOut = finalPh < 5.5 || finalPh > 6.5;
-
-    if (isTdsOut || isPhOut) {
-      await addSystemLog(
-        `[CALIBRATION DIAGNOSTIC] Hydroponic threshold breached: TDS=${finalTds}ppm, pH=${finalPh}. Automated response active!`,
-        'ALERT',
-        'STATION_DIAGNOSTIC'
-      );
-    } else {
-      await addSystemLog(
-        `[CALIBRATION DIAGNOSTIC] Sensor calibration reading verified: TDS=${finalTds}ppm, pH=${finalPh}, Temp=${finalTemp}°C, Humidity=${finalHumidity}%.`,
-        'INFO',
-        'STATION_DIAGNOSTIC'
-      );
-    }
-
-    // Evaluate SMS alerts for simulated low pH, high TDS, low water, etc.
-    await evaluateTelemetryForSmsAlerts(reading);
-
-    res.json({ success: true, reading });
-  } catch (error: any) {
-    res.status(500).json({ error: 'Simulator telemetry failed.' });
-  }
-});
-
 // 13. SMS Settings & Management Endpoints
 app.get('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
@@ -1430,12 +1321,34 @@ app.get('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest
 app.post('/api/sms/settings', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const patch: Record<string, any> = { ...req.body };
-    if (typeof patch.phone_number === 'string' && patch.phone_number.trim()) {
+
+    // Only accept the fields this feature actually uses, and coerce them so a
+    // malformed request cannot disable the cooldown or corrupt the stored row.
+    const toggleFields = [
+      'enabled',
+      'notify_on_flush',
+      'notify_on_low_ph',
+      'notify_on_high_ph',
+      'notify_on_low_tds',
+      'notify_on_high_tds',
+      'notify_on_low_water',
+      'notify_on_empty_tank'
+    ];
+    for (const field of toggleFields) {
+      if (patch[field] !== undefined) patch[field] = patch[field] ? 1 : 0;
+    }
+    if (patch.cooldown_minutes !== undefined) {
+      const minutes = Number(patch.cooldown_minutes);
+      patch.cooldown_minutes = Number.isFinite(minutes) ? Math.min(1440, Math.max(1, Math.round(minutes))) : 15;
+    }
+    if (typeof patch.phone_number === 'string') {
       patch.phone_number = normalizePhoneNumber(patch.phone_number);
     }
     if (typeof patch.iprog_api_key === 'string') {
       patch.iprog_api_key = patch.iprog_api_key.trim();
     }
+    patch.sms_provider = 'IPROG';
+
     const updated = await updateSmsSettings(patch);
     await addSystemLog(
       `SMS alert settings updated: Recipient=${updated.phone_number}, Active=${updated.enabled ? 'ON' : 'OFF'}`,
@@ -1502,37 +1415,6 @@ app.get('/api/sms/iprog/account', authenticateToken, async (req: AuthenticatedRe
   }
 });
 
-// Check Semaphore balance & account status (for user's ₱500 account)
-app.get('/api/sms/semaphore/account', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const settings = await getSmsSettings();
-    const apiKey = (req.query.apikey as string) || settings.semaphore_api_key || process.env.SEMAPHORE_API_KEY;
-
-    if (!apiKey) {
-      res.status(400).json({ error: 'Semaphore API key is not configured.' });
-      return;
-    }
-
-    const response = await fetch(`https://api.semaphore.co/api/v4/account?apikey=${encodeURIComponent(apiKey)}`);
-    if (!response.ok) {
-      const errText = await response.text();
-      res.status(response.status).json({ error: 'Failed to query Semaphore: ' + errText });
-      return;
-    }
-
-    const data = await response.json();
-    res.json({
-      success: true,
-      account_id: data.account_id,
-      account_name: data.account_name,
-      status: data.status,
-      credit_balance: data.credit_balance
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: 'Error querying Semaphore account: ' + error.message });
-  }
-});
-
 app.get('/api/sms/logs', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const limit = Number(req.query.limit) || 50;
@@ -1552,47 +1434,9 @@ app.delete('/api/sms/logs', authenticateToken, async (req: AuthenticatedRequest,
   }
 });
 
-// 14. Cloud Database Link Status & Dynamic Connection
+// 14. Cloud Database Link Status
 app.get('/api/database/status', authenticateToken, (req: AuthenticatedRequest, res: Response) => {
   res.json(getDbConnectionStatus());
-});
-
-app.post('/api/database/connect', authenticateToken, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    const { host, port, user, password, database, url, ssl } = req.body;
-    const result = await connectToDatabase({
-      host,
-      port: port ? Number(port) : undefined,
-      user,
-      password,
-      database: database?.trim() || 'sql12839434',
-      url,
-      ssl: ssl !== false
-    });
-
-    if (result.success) {
-      await addSystemLog(
-        `Cloud database connected successfully: ${result.status.database} on ${result.status.host}`,
-        'SUCCESS',
-        'DATABASE_MANAGER'
-      );
-      res.json(result);
-    } else {
-      res.status(400).json(result);
-    }
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message || 'Database connection error' });
-  }
-});
-
-// Download phpMyAdmin Schema for sql12839434
-app.get('/api/download/sql12839434', (req: Request, res: Response) => {
-  const filePath = path.join(__dirname, 'public', 'aquaplant_sql12839434.sql');
-  if (fs.existsSync(filePath)) {
-    res.download(filePath, 'aquaplant_sql12839434.sql');
-  } else {
-    res.status(404).send('SQL script not found');
-  }
 });
 
 // 15. System Diagnostic Status
@@ -1634,8 +1478,8 @@ app.get('/api/esp32/config', authenticateToken, (req: AuthenticatedRequest, res:
       temperature_sensor: 'GPIO 13 (DHT22 ambient air temperature + humidity)',
       water_level_sensor: 'GPIO 32 (ADC1_CH4, Depth probe)',
       humidity_sensor: 'GPIO 13 (DHT22 Digital, shared with air temperature)',
-      solution_pump_relay: 'GPIO 25 (Active-LOW 5V Relay Channel 1)',
-      water_pump_relay: 'GPIO 26 (Active-LOW 5V Relay Channel 2)',
+      solution_pump_relay: 'GPIO 26 (Active-LOW 5V Relay Channel 2)',
+      water_pump_relay: 'GPIO 25 (Active-LOW 5V Relay Channel 1)',
       flush_pump_relay: 'GPIO 27 (Active-LOW 5V Relay Channel 3)'
     }
   });
@@ -1745,48 +1589,7 @@ app.post('/api/esp32/test-telemetry', authenticateToken, async (req: Authenticat
   }
 });
 
-// ESP32 Local IP Probe (Tests connectivity to an ESP32 on the local LAN)
-app.post('/api/esp32/lan-probe', authenticateToken, async (req: AuthenticatedRequest, res: Response) => {
-  const { ip } = req.body;
-  if (!ip) {
-    res.status(400).json({ error: 'IP address or hostname is required (e.g., 192.168.1.184)' });
-    return;
-  }
-
-  const cleanIp = ip.replace(/^https?:\/\//, '').replace(/\/$/, '');
-  const targetUrl = `http://${cleanIp}/status`;
-
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
-    const probeRes = await fetch(targetUrl, { signal: controller.signal }).catch(() => null);
-    clearTimeout(timeout);
-
-    if (probeRes && probeRes.ok) {
-      const data = await probeRes.json().catch(() => null);
-      res.json({
-        online: true,
-        ip: cleanIp,
-        message: `ESP32 reachable at ${cleanIp}`,
-        response: data
-      });
-    } else {
-      res.json({
-        online: false,
-        ip: cleanIp,
-        message: `ESP32 at ${cleanIp} did not respond to /status probe within 3.5s. Ensure ESP32 is powered and connected to same WiFi.`
-      });
-    }
-  } catch (e: any) {
-    res.json({
-      online: false,
-      ip: cleanIp,
-      message: `LAN probe timeout or unreachable at ${cleanIp}.`
-    });
-  }
-});
-
-// 14. File Downloads (Firmware with injected Wi-Fi credentials & SQL Schema)
+// 14. File Downloads (Firmware with injected Wi-Fi credentials)
 app.get('/api/download/firmware', (req: Request, res: Response) => {
   const filePath = path.join(__dirname, 'firmware', 'aquaplant_esp32.ino');
   if (fs.existsSync(filePath)) {
@@ -1816,15 +1619,6 @@ app.get('/api/download/firmware', (req: Request, res: Response) => {
     res.send(content);
   } else {
     res.status(404).send('Firmware file not found');
-  }
-});
-
-app.get('/api/download/schema', (req: Request, res: Response) => {
-  const filePath = path.join(__dirname, 'schema.sql');
-  if (fs.existsSync(filePath)) {
-    res.download(filePath, 'aquaplant_mysql_schema.sql');
-  } else {
-    res.status(404).send('Schema file not found');
   }
 });
 
@@ -1896,6 +1690,17 @@ async function startServer() {
           .send('AQUAPLANT frontend build not found. Run "npm run build" and restart the server.');
       });
     }
+  }
+
+  if (!process.env.JWT_SECRET) {
+    console.warn(
+      '[AQUAPLANT] WARNING: JWT_SECRET is not set. A public fallback secret is in use; set JWT_SECRET in Render before exposing the app.'
+    );
+  }
+  if (!ADMIN_SIGNUP_ENABLED) {
+    console.warn(
+      '[AQUAPLANT] Administrator self-registration is disabled because ADMIN_SIGNUP_CODE is not set. Set it in Render to allow new admin accounts.'
+    );
   }
 
   app.listen(PORT, '0.0.0.0', () => {

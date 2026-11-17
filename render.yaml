@@ -18,14 +18,22 @@ services:
         value: aquaplant_esp32_device_key_secret_2026
       - key: ALLOW_REGISTRATION
         value: "true"
-      # Semaphore SMS Integration (P500 Budget - P0.50/SMS):
-      - key: SEMAPHORE_API_KEY
+      # TiDB Cloud connection (mysql2 driver).
+      - key: DB_HOST
         sync: false
-      - key: SEMAPHORE_SENDER_NAME
-        value: SEMAPHORE
-      # External MySQL connection string: mysql://user:pass@host:3306/dbname
-      # Render has no managed MySQL, so this must point at freesqldatabase,
-      # Aiven, Railway, etc. Leave it unset and the app runs on in-memory
-      # storage, which is wiped on every restart.
-      - key: DATABASE_URL
+      - key: DB_PORT
+        value: "4000"
+      - key: DB_NAME
+        sync: false
+      - key: DB_SSL
+        value: "true"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      # IPROG SMS gateway token (https://www.iprogsms.com).
+      - key: IPROG_API_KEY
+        sync: false
+      # Required in production: the code typed into "Register Admin".
+      - key: ADMIN_SIGNUP_CODE
         sync: false

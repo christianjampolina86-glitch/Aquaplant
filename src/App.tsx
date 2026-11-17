@@ -1,5 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
-import {
+import React, { useState, useEffect, useRef } from 'react';import {
   Activity,
   Zap,
   Droplets,
@@ -30,8 +29,6 @@ import {
   Menu,
   X,
   LayoutDashboard,
-  SlidersHorizontal,
-  Layers,
   FileText,
   ChevronLeft,
   ChevronRight,
@@ -39,7 +36,6 @@ import {
   Terminal,
   Usb,
   Copy,
-  ExternalLink,
   Radio,
   RefreshCw,
   Eye,
@@ -52,13 +48,6 @@ import {
   Square,
   FlaskConical
 } from 'lucide-react';
-import {
-  testConnection as testFirebaseConnection,
-  auth as firebaseAuth,
-  fbSignOut,
-  onAuthStateChanged,
-  User as FirebaseUser
-} from './firebase';
 
 
 
@@ -71,13 +60,13 @@ import {
  * Features:
  * 1. Real-time Telemetry: Live 5-sensor monitoring (TDS, pH, Temp, Water Level, Humidity).
  * 2. Hardware Heartbeat: 3-minute freshness check displaying ESP32 connection state.
- * 3. Actuator Control: Real-time toggles for Circulation Pump, Flush Solenoid, Refill Valve, Auto Mode.
+ * 3. Actuator Control: Real-time toggles for the 3 submersible pumps and Auto Mode.
  * 4. Failsafe Manual Flush: Executes emergency drain and refill sequence with atomic audit logging.
  * 5. High-Performance Canvas Graph: Zero-dependency 2D HTML5 canvas rendering multi-series
  *    time-series curves for TDS, pH, temperature, water level, and humidity.
- * 6. Built-in Hardware Simulator: Allows capstone committee to simulate adverse pH or high TDS
- *    conditions to observe autonomous auto-flush trigger reactions in real time.
- * 7. Capstone Defense Hub: Embedded view & 1-click download of Arduino firmware & MySQL schema.
+ * 6. One-Click Demo Mode: Generates presentation telemetry locally in the browser
+ *    so the dashboard can be shown without touching the database.
+ * 7. Capstone Defense Hub: Embedded view & 1-click download of Arduino firmware.
  */
 
 /**
@@ -159,11 +148,9 @@ export interface SmsAlertSetting {
   notify_on_low_water: number;
   notify_on_empty_tank: number;
   cooldown_minutes: number;
-  sms_provider?: 'IPROG' | 'SEMAPHORE' | 'TWILIO' | 'WEBHOOK' | 'SIMULATOR';
+  sms_provider?: 'IPROG';
   iprog_api_key?: string;
   iprog_sender_name?: string;
-  semaphore_api_key?: string;
-  semaphore_sender_name?: string;
   updated_at?: string;
 }
 
@@ -177,27 +164,13 @@ export interface SmsLog {
   created_at: string;
 }
 
-export interface CloudDbStatus {
-  connected: boolean;
-  provider: string;
-  host: string;
-  database: string;
-  ssl: boolean;
-  latency_ms: number;
-  tables_count: number;
-  message: string;
-  connection_source: 'DATABASE_URL' | 'DB_HOST_CONFIG' | 'IN_MEMORY_FALLBACK';
-}
-
 // ============================================================================
 // OFFLINE MODE STORAGE
-// While the station has no internet, telemetry readings and audit events are
-// queued in localStorage. When the operator signs back in, they are uploaded
-// to the MySQL/TiDB database in one batch.
+// While the station has no internet, operator actions (pump toggles, flushes)
+// are queued in localStorage. When the operator signs back in, the audit log
+// entries are uploaded to the database in one batch.
 // ============================================================================
-const OFFLINE_READINGS_KEY = 'aquaplant_offline_readings';
 const OFFLINE_LOGS_KEY = 'aquaplant_offline_logs';
-const OFFLINE_READINGS_LIMIT = 720; // ~2 hours at one sample every 10s
 const OFFLINE_LOGS_LIMIT = 500;
 
 function readOfflineQueue<T>(key: string): T[] {
@@ -217,28 +190,8 @@ function writeOfflineQueue<T>(key: string, items: T[]) {
 }
 
 function getOfflineQueueCounts() {
-  const readings = readOfflineQueue<SensorReading>(OFFLINE_READINGS_KEY).length;
   const logs = readOfflineQueue<SystemLog>(OFFLINE_LOGS_KEY).length;
-  return { readings, logs, total: readings + logs };
-}
-
-// Keep one sample every 10 seconds so the queue stays small but useful.
-function queueOfflineReading(reading: SensorReading) {
-  const queue = readOfflineQueue<SensorReading>(OFFLINE_READINGS_KEY);
-  const last = queue[queue.length - 1];
-  if (last && Date.now() - new Date(last.recorded_at).getTime() < 10000) return;
-  queue.push({
-    id: 0,
-    tds: Number(reading.tds),
-    ph: Number(reading.ph),
-    temperature: Number(reading.temperature),
-    water_level: Number(reading.water_level),
-    humidity: Number(reading.humidity ?? 0),
-    recorded_at: reading.recorded_at || new Date().toISOString(),
-    device_ip: reading.device_ip
-  });
-  while (queue.length > OFFLINE_READINGS_LIMIT) queue.shift();
-  writeOfflineQueue(OFFLINE_READINGS_KEY, queue);
+  return { logs, total: logs };
 }
 
 function queueOfflineLog(log: SystemLog) {
@@ -256,7 +209,6 @@ function queueOfflineLog(log: SystemLog) {
 
 function clearOfflineQueues() {
   try {
-    localStorage.removeItem(OFFLINE_READINGS_KEY);
     localStorage.removeItem(OFFLINE_LOGS_KEY);
   } catch {}
 }
@@ -302,8 +254,7 @@ export default function App() {
     recorded_at: ''
   });
 
-  // Offline mode: records captured while the station has no internet
-  const latestReadingRef = useRef<SensorReading | null>(null);
+  // Offline mode: audit log records queued on this device
   const [offlineQueuedCount, setOfflineQueuedCount] = useState<number>(() => getOfflineQueueCounts().total);
   const [offlineSyncing, setOfflineSyncing] = useState(false);
   const [offlineSyncNotice, setOfflineSyncNotice] = useState('');
@@ -329,10 +280,6 @@ export default function App() {
     const standalone = window.matchMedia?.('(display-mode: standalone)').matches;
     return !!standalone || (navigator as unknown as { standalone?: boolean }).standalone === true;
   });
-
-  useEffect(() => {
-    latestReadingRef.current = latestReading;
-  }, [latestReading]);
 
   const [esp32Status, setEsp32Status] = useState<{ is_online: boolean; last_seen_ago: string }>({
     is_online: false,
@@ -368,7 +315,6 @@ export default function App() {
     sms_provider: 'IPROG'
   });
   const [smsLogs, setSmsLogs] = useState<SmsLog[]>([]);
-  const [cloudDbStatus, setCloudDbStatus] = useState<CloudDbStatus | null>(null);
   const [testSmsLoading, setTestSmsLoading] = useState(false);
   const [testSmsStatus, setTestSmsStatus] = useState<{ success: boolean; message: string; sid?: string } | null>(null);
   const [savingSms, setSavingSms] = useState(false);
@@ -507,9 +453,6 @@ export default function App() {
   const [serialCommand, setSerialCommand] = useState('');
 
   // Local Network LAN Probe & WiFi Config State
-  const [lanIp, setLanIp] = useState('192.168.1.184');
-  const [lanProbing, setLanProbing] = useState(false);
-  const [lanProbeResult, setLanProbeResult] = useState<{ online: boolean; ip: string; message: string } | null>(null);
   const [wifiSsid, setWifiSsid] = useState(() => {
     try {
       return localStorage.getItem('aquaplant_wifi_ssid') || 'AQUAPLANT_NETWORK';
@@ -544,9 +487,7 @@ export default function App() {
   const [wifiSaveFeedback, setWifiSaveFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
   const [pushingWifiSerial, setPushingWifiSerial] = useState(false);
 
-  const [showSimulator, setShowSimulator] = useState(false);
   const [showFirmwareModal, setShowFirmwareModal] = useState(false);
-  const [showLoginModal, setShowLoginModal] = useState(false);
   const [hasExplicitlyLoggedOut, setHasExplicitlyLoggedOut] = useState<boolean>(() => {
     try {
       return localStorage.getItem('aquaplant_explicit_logout') === 'true';
@@ -554,7 +495,6 @@ export default function App() {
       return false;
     }
   });
-  const [guestReadOnly, setGuestReadOnly] = useState(false);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState('');
@@ -571,37 +511,8 @@ export default function App() {
   const [isBrowserOnline, setIsBrowserOnline] = useState<boolean>(() => {
     return typeof navigator !== 'undefined' ? navigator.onLine : true;
   });
-  const [isFirstVisit, setIsFirstVisit] = useState<boolean>(() => {
-    try {
-      return !localStorage.getItem('aquaplant_mode_chosen') && !localStorage.getItem('aquaplant_auth_token') && !localStorage.getItem('aquaplant_offline_mode');
-    } catch {
-      return true;
-    }
-  });
-  const [loginAuthTab, setLoginAuthTab] = useState<'offline' | 'online'>(() => {
-    if (typeof navigator !== 'undefined' && !navigator.onLine) return 'offline';
-    return 'online';
-  });
   const [offlineStationName, setOfflineStationName] = useState('Greenhouse Alpha (Station #1)');
   const [offlineOperatorName, setOfflineOperatorName] = useState('Field Operator');
-
-  // Firebase Firestore & Auth States
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [firebaseStatus, setFirebaseStatus] = useState<{ connected: boolean; message: string; tested: boolean }>({
-    connected: false,
-    message: 'Connecting to Cloud Firestore...',
-    tested: false
-  });
-
-  // Simulator Form State
-  const [simTds, setSimTds] = useState(750);
-  const [simPh, setSimPh] = useState(6.1);
-  const [simTemp, setSimTemp] = useState(24.5);
-  const [simLevel, setSimLevel] = useState(85);
-  const [simHumidity, setSimHumidity] = useState(65);
-  const [simLoading, setSimLoading] = useState(false);
-  const [simError, setSimError] = useState('');
-  const [simSuccess, setSimSuccess] = useState('');
 
   // Code Display Cache
   const [firmwareCode, setFirmwareCode] = useState<string>('Loading firmware source...');
@@ -609,43 +520,6 @@ export default function App() {
   // Canvas Reference
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [hoverData, setHoverData] = useState<{ x: number; y: number; item: SensorReading } | null>(null);
-
-  // Boot Effect: Test Firestore Connection & Listen for Firebase Auth per skill directives
-  useEffect(() => {
-    testFirebaseConnection()
-      .then((res) => {
-        setFirebaseStatus({
-          connected: res.connected,
-          message: res.message || (res.connected ? 'Connected to Cloud Firestore' : 'Firestore offline'),
-          tested: true
-        });
-      })
-      .catch((err) => {
-        setFirebaseStatus({
-          connected: false,
-          message: 'Connection check failed: ' + String(err),
-          tested: true
-        });
-      });
-
-    const unsubscribe = onAuthStateChanged(firebaseAuth, (currentUser) => {
-      setFirebaseUser(currentUser);
-      if (currentUser) {
-        const u = {
-          username: currentUser.displayName || currentUser.email?.split('@')[0] || 'Firebase Operator',
-          role: 'admin'
-        };
-        setUser(u);
-        setToken('firebase-' + currentUser.uid);
-        localStorage.setItem('aquaplant_auth_token', 'firebase-' + currentUser.uid);
-        localStorage.setItem('aquaplant_auth_user', JSON.stringify(u));
-        markSessionStarted();
-        setHasExplicitlyLoggedOut(false);
-      }
-    });
-
-    return () => unsubscribe();
-  }, []);
 
   // Clock interval
   useEffect(() => {
@@ -674,7 +548,6 @@ export default function App() {
     const handleOnline = () => setIsBrowserOnline(true);
     const handleOffline = () => {
       setIsBrowserOnline(false);
-      setLoginAuthTab('offline');
     };
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
@@ -684,21 +557,13 @@ export default function App() {
     };
   }, []);
 
-  // Log Out Handler (supports local session, offline mode, and Firebase sign out)
-  // When pressed, operator session is terminated and user is brought directly to the Login Dashboard
+  // Log Out Handler
+  // When pressed, the operator session is terminated and the user is brought
+  // directly to the login screen.
   const handleLogout = async () => {
-    try {
-      if (firebaseAuth.currentUser) {
-        await fbSignOut(firebaseAuth);
-      }
-    } catch (e) {
-      console.warn('Firebase signout error', e);
-    }
-    setFirebaseUser(null);
     setToken(null);
     setUser(null);
     setIsOfflineMode(false);
-    setGuestReadOnly(false);
     // Leaving the dashboard always ends a demo session.
     demoModeRef.current = false;
     setDemoMode(false);
@@ -718,7 +583,6 @@ export default function App() {
     localStorage.setItem('aquaplant_explicit_logout', 'true');
     clearSessionMarker();
     setHasExplicitlyLoggedOut(true);
-    setShowLoginModal(false);
     setLoginError('');
     // Always return to the operator sign-in form (never the Wi-Fi gateway)
     setAuthScreen('login');
@@ -745,12 +609,9 @@ export default function App() {
     // skipped by a leftover offline session.
     localStorage.removeItem('aquaplant_offline_mode');
     localStorage.setItem('aquaplant_mode_chosen', 'true');
-    setIsFirstVisit(false);
     markSessionStarted();
     localStorage.removeItem('aquaplant_explicit_logout');
     setHasExplicitlyLoggedOut(false);
-    setGuestReadOnly(false);
-    setShowLoginModal(false);
     setLoginError('');
 
     const offlineLog: SystemLog = {
@@ -765,12 +626,11 @@ export default function App() {
     setOfflineQueuedCount(getOfflineQueueCounts().total);
   };
 
-  // Upload every reading and log captured while the station was offline.
+  // Upload the audit-log entries captured while the station was offline.
   // Runs automatically right after a successful cloud sign-in.
   const syncOfflineRecords = async (authToken: string) => {
-    const readings = readOfflineQueue<SensorReading>(OFFLINE_READINGS_KEY);
     const logs = readOfflineQueue<SystemLog>(OFFLINE_LOGS_KEY);
-    if (!readings.length && !logs.length) {
+    if (!logs.length) {
       setOfflineQueuedCount(0);
       return;
     }
@@ -779,14 +639,9 @@ export default function App() {
 
     // The server accepts a limited batch per request, so send large queues in
     // several chunks instead of dropping everything past the limit.
-    const readingChunk = 500;
     const logChunk = 200;
-    const batches = Math.max(
-      Math.ceil(readings.length / readingChunk) || 1,
-      Math.ceil(logs.length / logChunk) || 1
-    );
+    const batches = Math.ceil(logs.length / logChunk);
 
-    let readingsSaved = 0;
     let logsSaved = 0;
 
     try {
@@ -798,57 +653,48 @@ export default function App() {
             Authorization: `Bearer ${authToken}`
           },
           body: JSON.stringify({
-            readings: readings.slice(i * readingChunk, (i + 1) * readingChunk),
             logs: logs.slice(i * logChunk, (i + 1) * logChunk)
           })
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          if (readingsSaved || logsSaved) {
+          if (logsSaved) {
             // Keep whatever failed so nothing is silently lost, then report.
-            writeOfflineQueue(
-              OFFLINE_READINGS_KEY,
-              readings.slice(i * readingChunk)
-            );
             writeOfflineQueue(OFFLINE_LOGS_KEY, logs.slice(i * logChunk));
-            setOfflineQueuedCount(
-              readings.length - i * readingChunk + (logs.length - i * logChunk)
-            );
+            setOfflineQueuedCount(logs.length - i * logChunk);
           }
           setOfflineSyncNotice(
-            `Could not upload all offline records: ${data.error || 'the server rejected the batch'}. Unsent records are still stored on this device and will retry at the next sign-in.`
+            `Could not upload all offline logs: ${data.error || 'the server rejected the batch'}. Unsent logs are still stored on this device and will retry at the next sign-in.`
           );
           return;
         }
-        readingsSaved += Number(data.readings) || 0;
         logsSaved += Number(data.logs) || 0;
       }
 
       clearOfflineQueues();
       setOfflineQueuedCount(0);
       setOfflineSyncNotice(
-        `Offline data uploaded to the database: ${readingsSaved} sensor reading(s) and ${logsSaved} system log(s) saved.`
+        `Offline audit logs uploaded to the database: ${logsSaved} system log(s) saved.`
       );
       setTimeout(() => setOfflineSyncNotice(''), 25000);
     } catch {
       setOfflineSyncNotice(
-        'Could not reach the server to upload the offline data. It is still stored on this device and will retry at the next sign-in.'
+        'Could not reach the server to upload the offline logs. They are still stored on this device and will retry at the next sign-in.'
       );
     } finally {
       setOfflineSyncing(false);
     }
   };
 
-  // Leave offline mode: the operator must sign in again, and the data
-  // collected while offline is uploaded straight to the database.
+  // Leave offline mode: the operator must sign in again, and the logs
+  // collected while offline are uploaded straight to the database.
   const handleSwitchToOnlineMode = () => {
-    const { readings, logs } = getOfflineQueueCounts();
-    const queued = readings + logs;
+    const { logs } = getOfflineQueueCounts();
+    const queued = logs;
 
     setIsOfflineMode(false);
     setToken(null);
     setUser(null);
-    setGuestReadOnly(false);
     localStorage.removeItem('aquaplant_offline_mode');
     localStorage.removeItem('aquaplant_auth_token');
     localStorage.removeItem('aquaplant_auth_user');
@@ -856,14 +702,13 @@ export default function App() {
     // Blocks the automatic demo sign-in so the login form really appears.
     localStorage.setItem('aquaplant_explicit_logout', 'true');
     setHasExplicitlyLoggedOut(true);
-    setShowLoginModal(false);
     setAuthScreen('login');
     setLoginError('');
     setLoginUsername('');
     setLoginPassword('');
     setAuthNotice(
       queued > 0
-        ? `Sign in to go back online. ${queued} record(s) collected offline (${readings} sensor readings, ${logs} logs) will be uploaded to the database automatically.`
+        ? `Sign in to go back online. ${queued} audit log(s) collected offline will be uploaded to the database automatically.`
         : 'Sign in to go back online and reconnect to the cloud database.'
     );
   };
@@ -872,7 +717,6 @@ export default function App() {
   const handleSaveWifiAndEnterDashboard = async (targetMode: 'offline' | 'online') => {
     await handleSaveWifiConfig(false);
     localStorage.setItem('aquaplant_mode_chosen', 'true');
-    setIsFirstVisit(false);
     if (targetMode === 'offline') {
       handleEnterOfflineMode(offlineStationName, offlineOperatorName);
     } else {
@@ -908,12 +752,9 @@ export default function App() {
       localStorage.setItem('aquaplant_auth_token', data.token);
       localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
       localStorage.setItem('aquaplant_mode_chosen', 'true');
-      setIsFirstVisit(false);
       markSessionStarted();
       localStorage.removeItem('aquaplant_explicit_logout');
       setHasExplicitlyLoggedOut(false);
-      setGuestReadOnly(false);
-      setShowLoginModal(false);
       setLoginLoading(false);
       fetchAllData();
       // Send the offline batch to the database right after signing in.
@@ -980,12 +821,9 @@ export default function App() {
       localStorage.setItem('aquaplant_auth_token', data.token);
       localStorage.setItem('aquaplant_auth_user', JSON.stringify(data.user));
       localStorage.setItem('aquaplant_mode_chosen', 'true');
-      setIsFirstVisit(false);
       markSessionStarted();
       localStorage.removeItem('aquaplant_explicit_logout');
       setHasExplicitlyLoggedOut(false);
-      setGuestReadOnly(false);
-      setShowLoginModal(false);
       setRegLoading(false);
       setRegUsername('');
       setRegEmail('');
@@ -1185,13 +1023,6 @@ export default function App() {
           if (smsLogsData.logs) setSmsLogs(smsLogsData.logs);
           else if (smsLogsData.length !== undefined) setSmsLogs(smsLogsData);
         }
-      }
-
-      // Cloud Database Status
-      const dbRes = await fetch('/api/database/status', { headers });
-      if (dbRes.ok) {
-        const dbData = await dbRes.json();
-        setCloudDbStatus(dbData);
       }
     } catch (e) {
       console.warn('Sync interval error:', e);
@@ -1522,27 +1353,6 @@ export default function App() {
     }
   };
 
-  // LAN Probe: Test Local IP
-  const handleProbeLan = async () => {
-    setLanProbing(true);
-    setLanProbeResult(null);
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-      const res = await fetch('/api/esp32/lan-probe', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ ip: lanIp })
-      });
-      const data = await res.json();
-      setLanProbeResult(data);
-    } catch (e) {
-      setLanProbeResult({ online: false, ip: lanIp, message: 'Probe request failed over network.' });
-    } finally {
-      setLanProbing(false);
-    }
-  };
-
   // Wi-Fi Configuration: Save to Server & Local Storage
   const handleSaveWifiConfig = async (pushOta = false) => {
     setWifiSaving(true);
@@ -1553,7 +1363,7 @@ export default function App() {
       localStorage.setItem('aquaplant_wifi_backup_ssid', wifiBackupSsid);
       localStorage.setItem('aquaplant_wifi_backup_pass', wifiBackupPassword);
 
-      // Offline mode / guest preview: keep the credentials on this device only.
+      // Offline session: keep the credentials on this device until the operator saves them online.
       if (!token || isOfflineMode) {
         setWifiSaveFeedback({
           type: 'success',
@@ -1661,13 +1471,10 @@ export default function App() {
 
 
   useEffect(() => {
-    // Guest preview has no session token, so do not poll protected endpoints
-    // (that only produced a stream of 401 errors in the browser console).
-    if (guestReadOnly) return;
     fetchAllData();
     const interval = setInterval(fetchAllData, 4000);
     return () => clearInterval(interval);
-  }, [token, timeRange, logFilter, guestReadOnly]);
+  }, [token, timeRange, logFilter]);
 
   // One-click demo: refresh the demo numbers every 3 seconds while active.
   useEffect(() => {
@@ -1955,7 +1762,6 @@ export default function App() {
   const toggleActuator = async (device: string, newState: number) => {
     if (!token) {
       setLoginError('Operator authentication required to toggle actuators.');
-      setShowLoginModal(true);
       return;
     }
 
@@ -2018,7 +1824,6 @@ export default function App() {
   const triggerManualFlush = async () => {
     if (!token) {
       setLoginError('Operator authentication required to trigger emergency flush.');
-      setShowLoginModal(true);
       return;
     }
     if (!window.confirm('Trigger emergency/manual reservoir flush cycle?')) return;
@@ -2072,65 +1877,6 @@ export default function App() {
   };
 
 
-  // Inject Simulated Telemetry (Diagnostics & Calibration)
-  const handleSimulateSubmit = async () => {
-    setSimError('');
-    setSimSuccess('');
-
-    const values = {
-      tds: Number(simTds),
-      ph: Number(simPh),
-      temperature: Number(simTemp),
-      water_level: Number(simLevel),
-      humidity: Number(simHumidity)
-    };
-    if (Object.values(values).some((v) => !Number.isFinite(v))) {
-      setSimError('Please enter valid numbers in every field.');
-      return;
-    }
-    if (isOfflineMode) {
-      setSimError('Diagnostics need an internet connection. Press "Go Online" and sign in first.');
-      return;
-    }
-
-    const authToken = token || localStorage.getItem('aquaplant_auth_token');
-    if (!authToken) {
-      setSimError('Your session has expired. Please sign in again.');
-      return;
-    }
-
-    setSimLoading(true);
-    try {
-      const res = await fetch('/api/simulator/reading', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${authToken}`
-        },
-        body: JSON.stringify(values)
-      });
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        setSimError(
-          data.error || `The server rejected the diagnostic reading (HTTP ${res.status}).`
-        );
-        return;
-      }
-
-      setSimSuccess('Diagnostic reading applied and saved to the database.');
-      fetchAllData();
-      setTimeout(() => {
-        setShowSimulator(false);
-        setSimSuccess('');
-      }, 1200);
-    } catch {
-      setSimError('Network error: could not reach the server. Check your connection and try again.');
-    } finally {
-      setSimLoading(false);
-    }
-  };
-
   // Export Excel
   const handleExportExcel = async () => {
     try {
@@ -2180,7 +1926,7 @@ export default function App() {
   // Check if we should render the dedicated Login Dashboard
   // This triggers when the user clicks Log Out OR when there is no active token/offline session.
   // A stored session always wins over a stale "logged out" flag.
-  const showLoginDashboard = !token && !isOfflineMode && !guestReadOnly;
+  const showLoginDashboard = !token && !isOfflineMode;
 
   // ==========================================================================
   //  REUSABLE WI-FI SETUP & ESP32 CONNECTION PAGE
@@ -2594,50 +2340,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Subnet LAN IP Direct Probe */}
-                <div className={`p-4 sm:p-5 rounded-2xl border ${themeCardBg} space-y-3`}>
-                  <div className="flex items-center gap-2">
-                    <Radio className="w-4 h-4 text-emerald-400" />
-                    <h4 className={`text-xs font-mono font-bold uppercase tracking-wider ${themeTextMain}`}>
-                      Probe Subnet Router IP
-                    </h4>
-                  </div>
-
-                  <p className={`text-[11px] ${themeTextMuted}`}>
-                    Test if ESP32 is already assigned an IP on your greenhouse router subnet.
-                  </p>
-
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={lanIp}
-                      onChange={(e) => setLanIp(e.target.value)}
-                      placeholder="192.168.1.184 or aquaplant.local"
-                      className={`flex-1 px-3 py-2 rounded-lg text-xs font-mono border outline-none ${
-                        isDark ? 'bg-[#061222] border-[#163252] text-white focus:border-[#00f2fe]' : 'bg-white border-slate-300 text-slate-900 focus:border-emerald-600'
-                      }`}
-                    />
-                    <button
-                      type="button"
-                      onClick={handleProbeLan}
-                      disabled={lanProbing}
-                      className="px-3.5 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow active:scale-95 transition cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-                    >
-                      <RefreshCw className={`w-3.5 h-3.5 ${lanProbing ? 'animate-spin' : ''}`} />
-                      <span>{lanProbing ? 'Probing...' : 'Probe'}</span>
-                    </button>
-                  </div>
-
-                  {lanProbeResult && (
-                    <div className={`p-2.5 rounded-lg text-xs font-mono border ${
-                      lanProbeResult.online
-                        ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-400'
-                        : 'bg-amber-950/30 border-amber-500/40 text-amber-300'
-                    }`}>
-                      {lanProbeResult.message}
-                    </div>
-                  )}
-                </div>
               </div>
             </div>
           </div>
@@ -2960,18 +2662,6 @@ export default function App() {
                 >
                   <Zap className="w-3.5 h-3.5 fill-slate-950" />
                   <span>⚡ Launch in Offline Mode (No Login)</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setGuestReadOnly(true);
-                    setHasExplicitlyLoggedOut(false);
-                  }}
-                  className={`text-xs font-semibold ${isDark ? 'text-slate-400 hover:text-white' : 'text-slate-600 hover:text-slate-900'} transition cursor-pointer inline-flex items-center gap-1.5`}
-                >
-                  <Eye className="w-3.5 h-3.5" />
-                  <span>View Dashboard as Guest (Read-Only)</span>
                 </button>
               </div>
                 </>
@@ -3349,23 +3039,6 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => {
-                  setSimError('');
-                  setSimSuccess('');
-                  setShowSimulator(true);
-                  setSidebarOpen(false);
-                }}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-[13px] font-semibold transition cursor-pointer ${
-                  isDark ? 'text-slate-300 hover:bg-[#0d223a] hover:text-white' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'
-                }`}
-                title="Station Diagnostics & Sensor Calibration"
-              >
-                <SlidersHorizontal className="w-4 h-4 shrink-0 text-[#00f2fe]" />
-                {!sidebarCollapsed && <span className="truncate">Diagnostics & Calibration</span>}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
                   setShowFirmwareModal(true);
                   setSidebarOpen(false);
                 }}
@@ -3497,7 +3170,7 @@ export default function App() {
             ) : (
               <button
                 type="button"
-                onClick={() => setShowLoginModal(true)}
+                onClick={handleLogout}
                 className="w-full py-2 px-3 rounded-lg bg-gradient-to-r from-[#00f2fe] to-[#4facfe] text-[#030a16] font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer shadow-sm"
               >
                 <LogIn className="w-3.5 h-3.5" />
@@ -3665,7 +3338,7 @@ export default function App() {
               <AlertTriangle className="w-4 h-4 shrink-0" />
             )}
             <span className="leading-relaxed">
-              {offlineSyncing ? 'Uploading the data collected during offline mode to the database…' : offlineSyncNotice}
+              {offlineSyncing ? 'Uploading the audit logs collected during offline mode to the database…' : offlineSyncNotice}
             </span>
           </div>
         )}
@@ -4361,217 +4034,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL 1: Telemetry & Anomaly Simulator */}
-      {showSimulator && (
-        <div className={`fixed inset-0 z-50 ${isDark ? 'bg-[#02060e]/85' : 'bg-slate-900/60'} backdrop-blur-sm flex items-center justify-center p-4`}>
-          <div className={`${isDark ? 'bg-[#081528] border border-[#00f2fe] shadow-[0_0_40px_rgba(0,242,254,0.25)]' : 'bg-white border border-slate-200 shadow-2xl'} max-w-xl w-full p-6 rounded-2xl transition-colors`}>
-            <div className={`flex justify-between items-center mb-4 pb-3 border-b ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
-              <h3 className={`text-lg font-bold ${isDark ? 'text-[#00f2fe]' : 'text-cyan-800'} flex items-center gap-2`}>
-                <Sliders className="w-5 h-5 text-emerald-400" /> Station Diagnostics & Sensor Calibration
-              </h3>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSimulator(false);
-                  setSimError('');
-                  setSimSuccess('');
-                }}
-                className={`${isDark ? 'text-gray-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'} text-xl font-bold cursor-pointer`}
-              >
-                &times;
-              </button>
-            </div>
-            <p className={`text-xs ${themeTextMuted} mb-4`}>
-              Calibrate sensor zero-points, test biological threshold alarms, and verify autonomous relay response:
-            </p>
-
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4">
-              <div>
-                <label className={`text-xs font-semibold ${themeTextMuted} block mb-1`}>TDS (ppm)</label>
-                <input
-                  type="number"
-                  value={simTds}
-                  onChange={(e) => setSimTds(Number(e.target.value))}
-                  className={`w-full ${isDark ? 'bg-[#040e1c] border-[#163252] text-white focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-cyan-600 focus:bg-white'} border rounded-lg p-2 font-mono text-sm outline-none transition`}
-                />
-                <span className={`text-[10px] ${themeTextDim}`}>Safe target: 600 - 900</span>
-              </div>
-              <div>
-                <label className={`text-xs font-semibold ${themeTextMuted} block mb-1`}>pH Level</label>
-                <input
-                  type="number"
-                  step="0.05"
-                  value={simPh}
-                  onChange={(e) => setSimPh(Number(e.target.value))}
-                  className={`w-full ${isDark ? 'bg-[#040e1c] border-[#163252] text-white focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-cyan-600 focus:bg-white'} border rounded-lg p-2 font-mono text-sm outline-none transition`}
-                />
-                <span className={`text-[10px] ${themeTextDim}`}>Safe target: 5.50 - 6.50</span>
-              </div>
-              <div>
-                <label className={`text-xs font-semibold ${themeTextMuted} block mb-1`}>Temperature (°C)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={simTemp}
-                  onChange={(e) => setSimTemp(Number(e.target.value))}
-                  className={`w-full ${isDark ? 'bg-[#040e1c] border-[#163252] text-white focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-cyan-600 focus:bg-white'} border rounded-lg p-2 font-mono text-sm outline-none transition`}
-                />
-                <span className={`text-[10px] ${themeTextDim}`}>Safe target: 20 - 28 °C</span>
-              </div>
-              <div>
-                <label className={`text-xs font-semibold ${themeTextMuted} block mb-1`}>Water Depth (%)</label>
-                <input
-                  type="number"
-                  value={simLevel}
-                  onChange={(e) => setSimLevel(Number(e.target.value))}
-                  className={`w-full ${isDark ? 'bg-[#040e1c] border-[#163252] text-white focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-cyan-600 focus:bg-white'} border rounded-lg p-2 font-mono text-sm outline-none transition`}
-                />
-                <span className={`text-[10px] ${themeTextDim}`}>Safe target: 70 - 100%</span>
-              </div>
-              <div>
-                <label className={`text-xs font-semibold ${themeTextMuted} block mb-1`}>Humidity (% RH)</label>
-                <input
-                  type="number"
-                  step="0.5"
-                  value={simHumidity}
-                  onChange={(e) => setSimHumidity(Number(e.target.value))}
-                  className={`w-full ${isDark ? 'bg-[#040e1c] border-[#163252] text-white focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-cyan-600 focus:bg-white'} border rounded-lg p-2 font-mono text-sm outline-none transition`}
-                />
-                <span className={`text-[10px] ${themeTextDim}`}>Safe target: 50 - 70%</span>
-              </div>
-            </div>
-
-            {/* Operational Test Presets */}
-            <div className="mb-5">
-              <span className={`text-xs font-bold ${themeTextMuted} block mb-2`}>Operational Condition Presets:</span>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSimTds(740);
-                    setSimPh(6.05);
-                    setSimTemp(24.2);
-                    setSimLevel(88);
-                    setSimHumidity(64.5);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
-                    isDark
-                      ? 'bg-[#0d223a] border-[#163252] text-[#00e676] hover:border-[#00e676]'
-                      : 'bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100'
-                  }`}
-                >
-                  🌿 Normal Setpoint
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSimTds(1180);
-                    setSimPh(6.1);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
-                    isDark
-                      ? 'bg-[#ff5252]/10 border-[#ff5252]/40 text-[#ff5252] hover:bg-[#ff5252]/20'
-                      : 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100'
-                  }`}
-                >
-                  ⚠️ High TDS (Salt Buildup)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSimTds(420);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
-                    isDark
-                      ? 'bg-[#ff5252]/10 border-[#ff5252]/40 text-[#ff5252] hover:bg-[#ff5252]/20'
-                      : 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100'
-                  }`}
-                >
-                  ⚠️ Low TDS (Depleted)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSimPh(4.8);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
-                    isDark
-                      ? 'bg-[#ff5252]/10 border-[#ff5252]/40 text-[#ff5252] hover:bg-[#ff5252]/20'
-                      : 'bg-purple-50 border-purple-300 text-purple-700 hover:bg-purple-100'
-                  }`}
-                >
-                  🧪 Acidic Lockout (&lt;5.5)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSimHumidity(36.0);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
-                    isDark
-                      ? 'bg-[#ffa502]/10 border-[#ffa502]/40 text-[#ffa502] hover:bg-[#ffa502]/20'
-                      : 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
-                  }`}
-                >
-                  💨 Low Humidity (&lt;50% Dry)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSimHumidity(88.0);
-                  }}
-                  className={`px-2.5 py-1 text-xs rounded border transition cursor-pointer ${
-                    isDark
-                      ? 'bg-[#ffa502]/10 border-[#ffa502]/40 text-[#ffa502] hover:bg-[#ffa502]/20'
-                      : 'bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100'
-                  }`}
-                >
-                  🌧️ High Humidity (&gt;70% Mold Risk)
-                </button>
-              </div>
-            </div>
-
-            {simError && (
-              <div className="mb-4 p-2.5 rounded-lg text-xs border bg-rose-500/10 border-rose-500/40 text-rose-400 flex items-start gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0" />
-                <span>{simError}</span>
-              </div>
-            )}
-            {simSuccess && (
-              <div className="mb-4 p-2.5 rounded-lg text-xs border bg-emerald-500/10 border-emerald-500/40 text-emerald-400 flex items-start gap-2">
-                <CheckCircle2 className="w-4 h-4 shrink-0" />
-                <span>{simSuccess}</span>
-              </div>
-            )}
-
-            <div className={`flex justify-end gap-3 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowSimulator(false);
-                  setSimError('');
-                  setSimSuccess('');
-                }}
-                className={`px-4 py-2 text-xs font-semibold rounded-lg ${
-                  isDark ? 'bg-[#0d223a] text-gray-300 hover:text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
-                } cursor-pointer transition`}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSimulateSubmit}
-                disabled={simLoading}
-                className="px-4 py-2 text-xs font-bold rounded-lg bg-gradient-to-r from-[#00f2fe] to-[#4facfe] text-[#030a16] shadow-md hover:opacity-95 cursor-pointer transition disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center gap-2"
-              >
-                {simLoading && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
-                {simLoading ? 'Applying…' : 'Apply Diagnostic Calibration'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* MODAL 2: Firmware Code Viewer */}
       {showFirmwareModal && (
         <div className={`fixed inset-0 z-50 ${isDark ? 'bg-[#02060e]/85' : 'bg-slate-900/60'} backdrop-blur-sm flex items-center justify-center p-4`}>
@@ -4811,256 +4273,6 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL 3: Operator Sign In Modal (with Offline Field Mode Option) */}
-      {showLoginModal && (
-        <div className={`fixed inset-0 z-50 ${isDark ? 'bg-[#02060e]/85' : 'bg-slate-900/60'} backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto`}>
-          <div className={`${isDark ? 'bg-[#081528] border border-[#00f2fe]/60 shadow-[0_0_40px_rgba(0,242,254,0.3)]' : 'bg-white border border-slate-200 shadow-2xl'} max-w-lg w-full p-6 flex flex-col rounded-2xl transition-colors max-h-[92vh] overflow-y-auto`}>
-            {/* Modal Header */}
-            <div className={`flex justify-between items-center mb-4 pb-3 border-b ${isDark ? 'border-[#163252]' : 'border-slate-200'}`}>
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-[#00f2fe]/15 border border-[#00f2fe]/40 flex items-center justify-center text-[#00f2fe]">
-                  {loginAuthTab === 'offline' ? <WifiOff className="w-4 h-4 text-amber-400" /> : <Lock className="w-4 h-4" />}
-                </div>
-                <div>
-                  <h3 className={`text-base font-bold ${isDark ? 'text-[#00f2fe]' : 'text-cyan-800'}`}>
-                    Station Operator Access
-                  </h3>
-                  <div className="text-[11px] text-slate-400">
-                    AQUAPLANT Hydroponics Control Center
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowLoginModal(false)}
-                className={`${isDark ? 'text-gray-400 hover:text-white' : 'text-slate-400 hover:text-slate-800'} text-2xl font-bold cursor-pointer`}
-                title="Continue in read-only observation mode"
-              >
-                &times;
-              </button>
-            </div>
-
-            {/* Auth Mode Tabs: Online Cloud Server vs. Offline Field Station */}
-            <div className="flex items-center gap-2 mb-4 p-1 rounded-xl bg-[#030a16] border border-[#163252]">
-              <button
-                type="button"
-                onClick={() => setLoginAuthTab('online')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  loginAuthTab === 'online'
-                    ? 'bg-[#00f2fe] text-[#030a16] shadow-sm'
-                    : 'text-slate-400 hover:text-white'
-                }`}
-              >
-                <Server className="w-3.5 h-3.5" />
-                <span>Online Cloud Server</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setLoginAuthTab('offline')}
-                className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  loginAuthTab === 'offline'
-                    ? 'bg-amber-400 text-black shadow-sm'
-                    : 'text-slate-400 hover:text-amber-300'
-                }`}
-              >
-                <WifiOff className="w-3.5 h-3.5" />
-                <span>⚡ Offline Field Station</span>
-              </button>
-            </div>
-
-            {/* TAB 1: ONLINE CLOUD SERVER AUTHENTICATION */}
-            {loginAuthTab === 'online' && (
-              <div>
-                <p className={`text-xs ${themeTextMuted} mb-4`}>
-                  Sign in with authorized station credentials to unlock write access for actuator relays,
-                  closed-loop schedules, and cloud-synced SMS notifications.
-                </p>
-
-                {loginError && (
-                  <div className="mb-4 p-3 rounded-xl bg-[#ff5252]/15 border border-[#ff5252]/40 text-[#ff5252] text-xs flex items-center gap-2">
-                    <AlertTriangle className="w-4 h-4 flex-shrink-0" />
-                    <span>{loginError}</span>
-                  </div>
-                )}
-
-                <form onSubmit={handleLoginSubmit} className="space-y-3.5">
-                  <div>
-                    <label className={`block text-xs font-semibold ${themeTextMuted} mb-1`}>
-                      Operator Username / Email
-                    </label>
-                    <input
-                      type="text"
-                      value={loginUsername}
-                      onChange={(e) => setLoginUsername(e.target.value)}
-                      placeholder="admin"
-                      required
-                      className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-600 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className={`block text-xs font-semibold ${themeTextMuted} mb-1`}>
-                      Password
-                    </label>
-                    <input
-                      type="password"
-                      value={loginPassword}
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      placeholder="••••••••"
-                      required
-                      className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white placeholder-gray-600 focus:border-[#00f2fe]' : 'bg-slate-50 border-slate-300 text-slate-900 placeholder-slate-400 focus:border-cyan-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
-                    />
-                  </div>
-
-                  <div className="flex items-center gap-2 pt-1">
-                    <button
-                      type="submit"
-                      disabled={loginLoading}
-                      className="flex-1 py-2.5 rounded-xl font-bold text-xs bg-gradient-to-r from-[#00f2fe] to-[#4facfe] text-[#030a16] hover:opacity-90 transition cursor-pointer shadow-md disabled:opacity-50 flex items-center justify-center gap-1.5"
-                    >
-                      <Lock className="w-3.5 h-3.5" />
-                      <span>{loginLoading ? 'Authenticating...' : 'Sign In (Online Server)'}</span>
-                    </button>
-                  </div>
-                </form>
-
-                {/* Standalone Offline Option Banner */}
-                <div className={`mt-4 p-3.5 rounded-xl border ${
-                  isDark ? 'bg-[#030a16] border-amber-500/30' : 'bg-amber-50/80 border-amber-300'
-                }`}>
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-lg bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
-                      <WifiOff className="w-4 h-4" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-1 mb-1">
-                        <span className={`text-xs font-bold ${isDark ? 'text-amber-300' : 'text-amber-900'}`}>
-                          Offline Mode (Field / Standalone)
-                        </span>
-                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 font-bold">
-                          STANDALONE
-                        </span>
-                      </div>
-                      <p className={`text-[11px] leading-relaxed ${isDark ? 'text-slate-400' : 'text-slate-600'} mb-2.5`}>
-                        Working in an off-grid greenhouse, farm tunnel, or direct USB cable link? Launch station immediately without internet or cloud authentication.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => handleEnterOfflineMode()}
-                        className="w-full py-2 px-3 rounded-lg text-xs font-bold bg-amber-400 hover:bg-amber-500 text-black shadow flex items-center justify-center gap-1.5 transition cursor-pointer active:scale-95"
-                      >
-                        <Zap className="w-3.5 h-3.5" />
-                        <span>Continue in Offline Mode</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* TAB 2: OFFLINE FIELD STATION CONFIGURATION */}
-            {loginAuthTab === 'offline' && (
-              <div className="space-y-4">
-                <div className={`p-3.5 rounded-xl border ${isDark ? 'bg-[#030a16] border-amber-500/30' : 'bg-amber-50 border-amber-200'}`}>
-                  <div className="flex items-center gap-2 mb-1.5">
-                    <span className="text-base">⚡</span>
-                    <span className={`text-xs font-bold ${isDark ? 'text-amber-300' : 'text-amber-900'}`}>
-                      Standalone Field Station Session
-                    </span>
-                  </div>
-                  <p className={`text-xs ${themeTextMuted} leading-relaxed`}>
-                    No internet connection or backend server is required. This mode stores settings locally in browser storage and provides write authorization to all pump relays and ESP32 USB hardware links.
-                  </p>
-                </div>
-
-                <div className="space-y-3">
-                  <div>
-                    <label className={`block text-xs font-semibold ${themeTextMuted} mb-1`}>
-                      Field Operator Call-sign / Name
-                    </label>
-                    <input
-                      type="text"
-                      value={offlineOperatorName}
-                      onChange={(e) => setOfflineOperatorName(e.target.value)}
-                      placeholder="e.g. Field Operator 1"
-                      className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white focus:border-amber-400' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-amber-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
-                    />
-                  </div>
-
-                  <div>
-                    <label className={`block text-xs font-semibold ${themeTextMuted} mb-1`}>
-                      Greenhouse / Station Location
-                    </label>
-                    <input
-                      type="text"
-                      value={offlineStationName}
-                      onChange={(e) => setOfflineStationName(e.target.value)}
-                      placeholder="e.g. Greenhouse Alpha (Station #1)"
-                      className={`w-full ${isDark ? 'bg-[#020710] border-[#163252] text-white focus:border-amber-400' : 'bg-slate-50 border-slate-300 text-slate-900 focus:border-amber-600 focus:bg-white'} border rounded-xl px-3.5 py-2.5 text-xs outline-none transition`}
-                    />
-                  </div>
-                </div>
-
-                {/* Offline Feature Verification List */}
-                <div className={`p-3 rounded-xl border text-[11px] space-y-1.5 ${isDark ? 'bg-[#020710] border-[#163252] text-slate-300' : 'bg-slate-50 border-slate-200 text-slate-700'}`}>
-                  <div className="font-bold font-mono text-emerald-400 flex items-center gap-1.5">
-                    <Check className="w-3.5 h-3.5" /> Direct manual pump toggles (Circulation, Water, Flush)
-                  </div>
-                  <div className="font-bold font-mono text-emerald-400 flex items-center gap-1.5">
-                    <Check className="w-3.5 h-3.5" /> Web Serial direct USB cable control (115200 baud)
-                  </div>
-                  <div className="font-bold font-mono text-emerald-400 flex items-center gap-1.5">
-                    <Check className="w-3.5 h-3.5" /> Offline biological simulation and local telemetry caching
-                  </div>
-                  <div className="font-bold font-mono text-emerald-400 flex items-center gap-1.5">
-                    <Check className="w-3.5 h-3.5" /> 1-Click "Go Online" anytime connection is restored
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleEnterOfflineMode(offlineStationName, offlineOperatorName)}
-                  className="w-full py-3 rounded-xl font-bold text-xs bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 text-slate-950 transition cursor-pointer shadow-md flex items-center justify-center gap-2 active:scale-95"
-                >
-                  <Zap className="w-4 h-4 fill-slate-950" />
-                  <span>Launch Station in Offline Field Mode</span>
-                </button>
-              </div>
-            )}
-
-            {/* Footer Navigation */}
-            <div className={`mt-4 pt-3 border-t ${isDark ? 'border-[#163252]' : 'border-slate-200'} flex flex-wrap items-center justify-between gap-2 text-[11px] ${themeTextDim}`}>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowLoginModal(false);
-                  setGuestReadOnly(false);
-                  setAuthScreen('register');
-                  setLoginRole('operator');
-                  setLoginError('');
-                }}
-                className="font-bold text-[#00f2fe] hover:underline transition cursor-pointer"
-              >
-                Create operator account
-              </button>
-              <a
-                href="/admin.html"
-                className="font-bold text-purple-400 hover:underline transition"
-              >
-                Administrator portal →
-              </a>
-              <button
-                type="button"
-                onClick={() => setShowLoginModal(false)}
-                className={`hover:${isDark ? 'text-white' : 'text-slate-900'} transition cursor-pointer`}
-              >
-                Continue in View-Only Mode
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
       {/* MODAL 4: SMS Alert Notifications Management */}
       {showSmsModal && (
         <div className={`fixed inset-0 z-50 ${isDark ? 'bg-[#02060e]/85' : 'bg-slate-900/60'} backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto`}>
@@ -6397,47 +5609,6 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* LAN IP Direct Subnet Probe Tool */}
-                  <div className={`p-4 sm:p-5 rounded-xl border ${isDark ? 'bg-[#030a16] border-[#163252]' : 'bg-slate-50 border-slate-200'}`}>
-                    <h4 className={`text-sm font-bold ${themeTextMain} flex items-center gap-2 mb-1`}>
-                      <Radio className="w-4 h-4 text-emerald-400" />
-                      Probe ESP32 Local IP on Subnet
-                    </h4>
-                    <p className={`text-xs ${themeTextMuted} mb-3`}>
-                      If the ESP32 is on the same local network, enter its IP address (assigned by your router) to test reachability.
-                    </p>
-
-                    <div className="flex flex-col sm:flex-row items-center gap-2">
-                      <input
-                        type="text"
-                        value={lanIp}
-                        onChange={(e) => setLanIp(e.target.value)}
-                        placeholder="192.168.1.184 or aquaplant.local"
-                        className={`flex-1 w-full px-3 py-2 rounded-lg text-xs font-mono border focus:outline-none focus:border-[#00f2fe] ${
-                          isDark ? 'bg-[#061222] border-[#163252] text-white' : 'bg-white border-slate-300 text-slate-900'
-                        }`}
-                      />
-                      <button
-                        type="button"
-                        onClick={handleProbeLan}
-                        disabled={lanProbing}
-                        className="w-full sm:w-auto px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white font-bold text-xs shadow active:scale-95 transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-1.5 shrink-0"
-                      >
-                        <RefreshCw className={`w-3.5 h-3.5 ${lanProbing ? 'animate-spin' : ''}`} />
-                        <span>{lanProbing ? 'Probing...' : 'Probe Local IP'}</span>
-                      </button>
-                    </div>
-
-                    {lanProbeResult && (
-                      <div className={`mt-3 p-3 rounded-lg text-xs font-mono border ${
-                        lanProbeResult.online
-                          ? 'bg-emerald-950/30 border-emerald-500/40 text-emerald-400'
-                          : 'bg-amber-950/30 border-amber-500/40 text-amber-300'
-                      }`}>
-                        {lanProbeResult.message}
-                      </div>
-                    )}
-                  </div>
                 </div>
               )}
 

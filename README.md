@@ -26,7 +26,7 @@ AQUAPLANT is an IoT-enabled cyber-physical hydroponics management platform desig
 ```
 +-------------------------------------------------------------+
 |                     HYDROPONIC RESERVOIR                    |
-|   [TDS Sensor]   [pH Probe]   [DS18B20 Temp]   [Water Level] |
+|   [TDS Sensor]   [pH Probe]   [DHT22 Air Temp/RH]   [Water Level] |
 +-------------------------------------------------------------+
                                | Analog / 1-Wire
                                v
@@ -35,7 +35,7 @@ AQUAPLANT is an IoT-enabled cyber-physical hydroponics management platform desig
 |  - 60s Telemetry HTTP POST (/api/sensors)                   |
 |  - 3s Command Polling (/api/controls/device)               |
 |  - Local Web Portal (192.168.4.1 / aquaplant.local)         |
-|  - Relays: [Circulation Pump] [Flush Valve] [Refill Valve]  |
+|  - Relays: [Fresh Water Pump] [Solution Pump] [Flush Pump]   |
 +-------------------------------------------------------------+
                  ^                               ^
    Offline WiFi  |                               | WiFi (STA) / Internet
@@ -63,12 +63,13 @@ AQUAPLANT is an IoT-enabled cyber-physical hydroponics management platform desig
 |---|---|---|---|
 | **Analog TDS Sensor** | `GPIO 34` (ADC1_CH6) | 3.3V - 5.0V | Gravity TDS meter, connected to ADC1 pin (ADC2 cannot be used with WiFi). |
 | **Analog pH Probe** | `GPIO 35` (ADC1_CH7) | 5.0V (Signal via 3.3V divider or calibrated) | E-201-C glass electrode probe. |
-| **DS18B20 Temp Sensor**| `GPIO 4` | 3.3V | 1-Wire digital bus. **Requires a 4.7kΩ pull-up resistor** between DATA and 3.3V! |
+| **DHT22 Air Temp** | `GPIO 13` | 3.3V - 5.0V | Ambient air temperature (°C). Shares the one-wire data pin with humidity. |
 | **Water Level Sensor** | `GPIO 32` (ADC1_CH4) | 3.3V | Submersible analog probe or ultrasonic JSN-SR04T. |
 | **Canopy Humidity (DHT22)** | `GPIO 13` | 3.3V - 5.0V | Ambient canopy relative humidity (% RH, target 50-70%). |
-| **Relay 1: Pump** | `GPIO 25` | 5.0V VCC / Logic 3.3V | Optoisolated relay module (Active LOW). Submersible 12V DC pump. |
-| **Relay 2: Flush Valve**| `GPIO 26` | 5.0V VCC / Logic 3.3V | Active LOW. 12V Solenoid valve connected to drain outlet. |
-| **Relay 3: Refill Valve**| `GPIO 27`| 5.0V VCC / Logic 3.3V | Active LOW. 12V Solenoid connected to fresh water reservoir. |
+| **Relay 1: Fresh Water Pump** | `GPIO 25` | 5.0V VCC / Logic 3.3V | Optoisolated relay module (Active LOW). Fresh water submersible pump. |
+| **Relay 2: Solution Pump**| `GPIO 26` | 5.0V VCC / Logic 3.3V | Active LOW. Solutioned/nutrient water submersible pump. |
+| **Relay 3: Flush Pump**| `GPIO 27`| 5.0V VCC / Logic 3.3V | Active LOW. Reservoir flushing/drain submersible pump. |
+| **Relay 4: Spare** | `GPIO 14` | 5.0V VCC / Logic 3.3V | Active LOW. Unused / auxiliary channel. |
 | **Status LED** | `GPIO 2` | Onboard | Blinks during WiFi search, solid when online. |
 
 > **Crucial Hardware Tip for Defense:** Never use ADC2 pins (GPIO 0, 2, 4, 12, 13, 14, 15, 25, 26, 27) for analog sensors while WiFi is active. WiFi uses the ADC2 peripheral. All analog inputs in AQUAPLANT use **ADC1 pins** (32, 34, 35) to prevent reading corruptions.
